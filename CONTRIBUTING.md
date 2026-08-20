@@ -1,6 +1,6 @@
 # Contributing
 
-> Thanks for your interest in contributing to **[repo name]**.
+> Thanks for your interest in contributing to **zipbomb**.
 
 Contributions of all kinds are welcome — bug fixes, improvements, documentation, ideas, and new features.
 

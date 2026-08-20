@@ -1,8 +1,8 @@
-# zipbomb
+# zipthorn
 
 **ZIP archive security research and defensive testing toolkit written in Go.**
 
-zipbomb is a CLI for generating, analyzing, detecting, and safely testing pathological ZIP archives.
+zipthorn is a CLI for generating, analyzing, detecting, and safely testing pathological ZIP archives.
 
 The goal is to help developers and security researchers answer a simple question:
 
@@ -37,16 +37,16 @@ See [DISCLAIMER.md](DISCLAIMER.md) for the full disclaimer.
 ### From source
 
 ```bash
-git clone https://github.com/PeacexF/zipbomb.git
-cd zipbomb
+git clone https://github.com/PeacexF/zipthorn.git
+cd zipthorn
 
-go build -o zipbomb ./cmd/zipbomb
+go build -o zipthorn ./cmd/zipthorn
 ```
 
 Or install directly:
 
 ```bash
-go install github.com/PeacexF/zipbomb/cmd/zipbomb@latest
+go install github.com/PeacexF/zipthorn/cmd/zipthorn@latest
 ```
 
 ---
@@ -54,7 +54,7 @@ go install github.com/PeacexF/zipbomb/cmd/zipbomb@latest
 ## Usage
 
 ```text
-zipbomb <command> [options]
+zipthorn <command> [options]
 ```
 
 Available commands:
@@ -71,7 +71,7 @@ fuzz         Generate varied pathological fixtures
 Run:
 
 ```bash
-zipbomb --help
+zipthorn --help
 ```
 
 for the complete CLI reference.
@@ -83,7 +83,7 @@ for the complete CLI reference.
 Generate a controlled pathological archive:
 
 ```bash
-zipbomb create --profile ratio --output test.zip
+zipthorn create --profile ratio --output test.zip
 ```
 
 Available profiles include:
@@ -103,7 +103,7 @@ Generation is bounded by configurable safety limits.
 Example:
 
 ```bash
-zipbomb create \
+zipthorn create \
   --profile ratio \
   --output test.zip \
   --max-output 10MB \
@@ -119,13 +119,13 @@ The generator is intended to produce **test fixtures**, not uncontrolled payload
 Analyze an archive without extracting it:
 
 ```bash
-zipbomb inspect test.zip
+zipthorn inspect test.zip
 ```
 
 Example output:
 
 ```text
-zipbomb
+zipthorn
 
 Archive
   Compressed:       8.2 MB
@@ -149,7 +149,7 @@ Recommendation: REVIEW
 JSON output:
 
 ```bash
-zipbomb inspect test.zip --json
+zipthorn inspect test.zip --json
 ```
 
 ---
@@ -159,7 +159,7 @@ zipbomb inspect test.zip --json
 Run the archive through the detection engine:
 
 ```bash
-zipbomb detect test.zip
+zipthorn detect test.zip
 ```
 
 The detector evaluates characteristics such as:
@@ -194,7 +194,7 @@ Detection thresholds can be configured for different environments.
 `test` is intended to exercise archive-processing behavior while enforcing explicit limits.
 
 ```bash
-zipbomb test test.zip \
+zipthorn test test.zip \
   --max-bytes 256MB \
   --max-files 10000 \
   --max-depth 10 \
@@ -222,7 +222,7 @@ This makes it useful for testing whether a crawler or archive processor **fails 
 Measure archive-processing behavior:
 
 ```bash
-zipbomb benchmark test.zip
+zipthorn benchmark test.zip
 ```
 
 Metrics can include:
@@ -245,7 +245,7 @@ JSON output makes benchmark results suitable for CI and regression testing.
 Generate varied pathological fixtures:
 
 ```bash
-zipbomb fuzz --output ./fixtures
+zipthorn fuzz --output ./fixtures
 ```
 
 The fuzzing engine varies archive characteristics such as:
@@ -265,7 +265,7 @@ A deterministic seed can be used to reproduce a particular fixture.
 
 ## Detection Model
 
-zipbomb separates archive parsing from security policy.
+zipthorn separates archive parsing from security policy.
 
 Conceptually:
 
@@ -296,7 +296,7 @@ For example, a malware scanner and a web crawler may have very different accepta
 
 ## Defensive Use Cases
 
-zipbomb can be used to test:
+zipthorn can be used to test:
 
 ### Web Crawlers
 
@@ -326,12 +326,12 @@ Keep pathological archives as regression fixtures and verify that resource limit
 
 ## Architecture
 
-zipbomb is intentionally small and written entirely in Go.
+zipthorn is intentionally small and written entirely in Go.
 
 ```text
-zipbomb/
+zipthorn/
 ├── cmd/
-│   └── zipbomb/
+│   └── zipthorn/
 │       └── main.go
 ├── internal/
 │   ├── archive/
@@ -340,15 +340,6 @@ zipbomb/
 │   ├── extractor/
 │   ├── benchmark/
 │   └── config/
-├── profiles/
-├── testdata/
-├── tests/
-├── README.md
-├── PLAN.md
-├── DISCLAIMER.md
-├── LICENSE
-├── go.mod
-└── go.sum
 ```
 
 The implementation prefers the Go standard library, particularly:
@@ -391,7 +382,7 @@ go vet ./...
 Build:
 
 ```bash
-go build ./cmd/zipbomb
+go build ./cmd/zipthorn
 ```
 
 Run fuzz tests:
@@ -428,17 +419,15 @@ go test -fuzz=Fuzz ./...
 * [ ] Extended malformed-archive corpus
 * [ ] Cross-platform release binaries
 * [ ] CI benchmark regression testing
-* [ ] Library API for embedding zipbomb functionality
-
-See [PLAN.md](PLAN.md) for the detailed development plan.
+* [ ] Library API for embedding zipthorn functionality
 
 ---
 
 ## Security
 
-If you discover a vulnerability in zipbomb itself, please report it responsibly.
+If you discover a vulnerability in zipthorn itself, please report it responsibly.
 
-When using zipbomb to test third-party software, ensure that you have explicit authorization before performing resource-exhaustion testing.
+When using zipthorn to test third-party software, ensure that you have explicit authorization before performing resource-exhaustion testing.
 
 For more information, see [DISCLAIMER.md](DISCLAIMER.md).
 

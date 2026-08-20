@@ -1,6 +1,6 @@
 # Contributing
 
-> Thanks for your interest in contributing to **zipbomb**.
+> Thanks for your interest in contributing to **zipthorn**.
 
 Contributions of all kinds are welcome — bug fixes, improvements, documentation, ideas, and new features.
 

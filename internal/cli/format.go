@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -17,15 +19,23 @@ func field(w io.Writer, label, value string) {
 }
 
 // Byte units are binary, matching config's KB/MB/GB constants.
+const (
+	kb int64 = 1 << 10
+	mb int64 = 1 << 20
+	gb int64 = 1 << 30
+	tb int64 = 1 << 40
+	pb int64 = 1 << 50
+)
+
 var byteUnits = []struct {
 	limit int64
 	name  string
 }{
-	{1 << 50, "PB"},
-	{1 << 40, "TB"},
-	{1 << 30, "GB"},
-	{1 << 20, "MB"},
-	{1 << 10, "KB"},
+	{pb, "PB"},
+	{tb, "TB"},
+	{gb, "GB"},
+	{mb, "MB"},
+	{kb, "KB"},
 }
 
 func humanBytes(n int64) string {
@@ -77,3 +87,61 @@ func plural(n int64, one, many string) string {
 }
 
 func trimZero(s string) string { return strings.TrimSuffix(s, ".0") }
+
+// Units are binary regardless of spelling, so "KB" and "KiB" both mean 1024.
+var byteMultipliers = map[string]int64{
+	"": 1, "B": 1,
+	"K": kb, "KB": kb, "KIB": kb,
+	"M": mb, "MB": mb, "MIB": mb,
+	"G": gb, "GB": gb, "GIB": gb,
+	"T": tb, "TB": tb, "TIB": tb,
+	"P": pb, "PB": pb, "PIB": pb,
+}
+
+// parseBytes reads a byte size such as "512", "8MB", or "1.5 GiB".
+func parseBytes(s string) (int64, error) {
+	t := strings.TrimSpace(s)
+	i := 0
+	for i < len(t) && (t[i] >= '0' && t[i] <= '9' || t[i] == '.') {
+		i++
+	}
+
+	digits, unit := t[:i], strings.ToUpper(strings.TrimSpace(t[i:]))
+	mult, ok := byteMultipliers[unit]
+	if digits == "" || !ok {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	v, err := strconv.ParseFloat(digits, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+
+	scaled := v * float64(mult)
+	if scaled > math.MaxInt64 {
+		return 0, fmt.Errorf("size %q is too large", s)
+	}
+	return int64(scaled), nil
+}
+
+// byteSizeValue adapts parseBytes to the flag package.
+type byteSizeValue struct{ p *int64 }
+
+func (b byteSizeValue) String() string {
+	if b.p == nil {
+		return "0"
+	}
+	return humanBytes(*b.p)
+}
+
+func (b byteSizeValue) Set(s string) error {
+	n, err := parseBytes(s)
+	if err != nil {
+		return err
+	}
+	*b.p = n
+	return nil
+}
+
+func sizeVar(fs *flag.FlagSet, p *int64, name, usage string) {
+	fs.Var(byteSizeValue{p}, name, usage)
+}

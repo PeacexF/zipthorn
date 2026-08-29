@@ -65,10 +65,6 @@ func runCreate(args []string, stdout, stderr io.Writer) error {
 	return notImplemented("create", args, stdout, stderr)
 }
 
-func runDetect(args []string, stdout, stderr io.Writer) error {
-	return notImplemented("detect", args, stdout, stderr)
-}
-
 func runTest(args []string, stdout, stderr io.Writer) error {
 	return notImplemented("test", args, stdout, stderr)
 }

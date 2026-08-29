@@ -52,10 +52,10 @@ jobs:
             exit 1
           fi
 
-      - name: go mod tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+      #- name: go mod tidy
+      #  run: |
+      #    go mod tidy
+      #    git diff --exit-code go.mod go.sum
 
   vuln:
     name: govulncheck

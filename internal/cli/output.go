@@ -20,7 +20,12 @@ type CodedError struct {
 	Err  error
 }
 
-func (e *CodedError) Error() string { return e.Err.Error() }
+func (e *CodedError) Error() string {
+	if e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
 func (e *CodedError) Unwrap() error { return e.Err }
 
 func coded(code int, err error) *CodedError { return &CodedError{Code: code, Err: err} }

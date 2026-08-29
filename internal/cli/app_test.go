@@ -58,7 +58,7 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestStubsReportUnimplemented(t *testing.T) {
-	for _, cmd := range []string{"create", "inspect", "detect", "test"} {
+	for _, cmd := range []string{"create", "detect", "test"} {
 		code, _, _ := run(t, cmd)
 		if code != cli.ExitUnsupported {
 			t.Errorf("%s: code = %d, want %d", cmd, code, cli.ExitUnsupported)
@@ -67,7 +67,7 @@ func TestStubsReportUnimplemented(t *testing.T) {
 }
 
 func TestBadFlagIsUsageError(t *testing.T) {
-	code, _, _ := run(t, "inspect", "--nope")
+	code, _, _ := run(t, "detect", "--nope")
 	if code != cli.ExitUsage {
 		t.Fatalf("code = %d, want %d", code, cli.ExitUsage)
 	}
@@ -80,5 +80,18 @@ func TestJSONStubOutput(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"status": "not_implemented"`) {
 		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+func TestCommandHelpExitsCleanly(t *testing.T) {
+	code, _, stderr := run(t, "inspect", "--help")
+	if code != cli.ExitOK {
+		t.Fatalf("code = %d, want %d", code, cli.ExitOK)
+	}
+	if !strings.Contains(stderr, "zipthorn inspect <archive>") {
+		t.Errorf("stderr missing command usage:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "help requested") {
+		t.Errorf("help must not surface as an error:\n%s", stderr)
 	}
 }

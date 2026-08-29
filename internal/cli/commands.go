@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 
 	"github.com/PeacexF/zipthorn/internal/config"
@@ -22,8 +24,21 @@ func newFlagSet(name string, stderr io.Writer, cf *commonFlags) *flag.FlagSet {
 	return fs
 }
 
+// usageFunc renders a command's own help, keeping the shape consistent with
+// the top-level usage block.
+func usageFunc(fs *flag.FlagSet, w io.Writer, use, summary string) func() {
+	return func() {
+		fmt.Fprintf(w, "%s\n\nUsage:\n  zipthorn %s\n\nOptions:\n", summary, use)
+		fs.SetOutput(w)
+		fs.PrintDefaults()
+	}
+}
+
 func parse(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return coded(ExitOK, nil) // usage has already been printed
+		}
 		return coded(ExitUsage, err)
 	}
 	return nil
@@ -48,10 +63,6 @@ func notImplemented(name string, args []string, stdout, stderr io.Writer) error 
 
 func runCreate(args []string, stdout, stderr io.Writer) error {
 	return notImplemented("create", args, stdout, stderr)
-}
-
-func runInspect(args []string, stdout, stderr io.Writer) error {
-	return notImplemented("inspect", args, stdout, stderr)
 }
 
 func runDetect(args []string, stdout, stderr io.Writer) error {

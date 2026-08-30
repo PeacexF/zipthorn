@@ -58,7 +58,7 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestStubsReportUnimplemented(t *testing.T) {
-	for _, cmd := range []string{"create", "test"} {
+	for _, cmd := range []string{"test"} {
 		code, _, _ := run(t, cmd)
 		if code != cli.ExitUnsupported {
 			t.Errorf("%s: code = %d, want %d", cmd, code, cli.ExitUnsupported)
@@ -74,7 +74,7 @@ func TestBadFlagIsUsageError(t *testing.T) {
 }
 
 func TestJSONStubOutput(t *testing.T) {
-	code, stdout, _ := run(t, "create", "--json")
+	code, stdout, _ := run(t, "test", "--json")
 	if code != cli.ExitUnsupported {
 		t.Fatalf("code = %d, want %d", code, cli.ExitUnsupported)
 	}

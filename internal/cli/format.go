@@ -128,7 +128,7 @@ type byteSizeValue struct{ p *int64 }
 
 func (b byteSizeValue) String() string {
 	if b.p == nil {
-		return "0"
+		return humanBytes(0)
 	}
 	return humanBytes(*b.p)
 }
@@ -144,4 +144,29 @@ func (b byteSizeValue) Set(s string) error {
 
 func sizeVar(fs *flag.FlagSet, p *int64, name, usage string) {
 	fs.Var(byteSizeValue{p}, name, usage)
+}
+
+// ratioValue accepts "80" or "80x", so a limit can be written the way the docs
+// and the reports spell it.
+type ratioValue struct{ p *float64 }
+
+func (r ratioValue) String() string {
+	if r.p == nil || *r.p <= 0 {
+		return "0"
+	}
+	return humanRatio(*r.p)
+}
+
+func (r ratioValue) Set(s string) error {
+	t := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(s)), "x")
+	v, err := strconv.ParseFloat(t, 64)
+	if err != nil || v < 0 || math.IsInf(v, 0) || math.IsNaN(v) {
+		return fmt.Errorf("invalid ratio %q", s)
+	}
+	*r.p = v
+	return nil
+}
+
+func ratioVar(fs *flag.FlagSet, p *float64, name, usage string) {
+	fs.Var(ratioValue{p}, name, usage)
 }

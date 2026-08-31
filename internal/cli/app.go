@@ -22,6 +22,7 @@ var commands = []command{
 	{"inspect", "Analyze an archive", runInspect},
 	{"detect", "Assess archive risk", runDetect},
 	{"test", "Safely test archive extraction", runTest},
+	{"benchmark", "Measure archive extraction performance", runBenchmark},
 }
 
 // Main runs the requested command and returns the process exit code.

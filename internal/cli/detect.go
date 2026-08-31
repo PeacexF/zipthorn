@@ -22,7 +22,12 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
 	fs := newFlagSet("detect", stderr, &cf)
 
-	th := config.Default().Thresholds
+	cfg, err := config.Load()
+	if err != nil {
+		return coded(ExitError, fmt.Errorf("config: %w", err))
+	}
+
+	th := cfg.Thresholds
 	fs.Float64Var(&th.ExpansionRatio, "threshold-ratio", th.ExpansionRatio, "expansion ratio treated as HIGH risk")
 	sizeVar(fs, &th.DeclaredSize, "threshold-size", "declared output size treated as HIGH risk")
 	fs.Int64Var(&th.FileCount, "threshold-files", th.FileCount, "file count treated as HIGH risk")

@@ -13,13 +13,18 @@ import (
 )
 
 func runCreate(args []string, stdout, stderr io.Writer) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return coded(ExitError, fmt.Errorf("config: %w", err))
+	}
+
 	var (
-		cf     commonFlags
-		out    string
-		force  bool
-		spec   generator.Spec
-		limits = config.Default().Limits
+		cf    commonFlags
+		out   string
+		force bool
+		spec  generator.Spec
 	)
+	limits := cfg.Limits
 	spec.Level = generator.LevelDefault
 
 	fs := newFlagSet("create", stderr, &cf)

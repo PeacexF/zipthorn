@@ -18,7 +18,12 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
 	fs := newFlagSet("test", stderr, &cf)
 
-	limits := config.Default().Limits
+	cfg, err := config.Load()
+	if err != nil {
+		return coded(ExitError, fmt.Errorf("config: %w", err))
+	}
+
+	limits := cfg.Limits
 	sizeVar(fs, &limits.MaxOutputBytes, "max-bytes", "maximum bytes to extract")
 	ratioVar(fs, &limits.MaxExpansionRatio, "max-ratio", "maximum expansion ratio")
 	fs.Int64Var(&limits.MaxFiles, "max-files", limits.MaxFiles, "maximum files to extract")

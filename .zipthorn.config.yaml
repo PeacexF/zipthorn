@@ -1,0 +1,49 @@
+# zipthorn configuration
+#
+# This file defines resource limits and detection thresholds.
+# Both sections are optional; missing values use built-in defaults.
+#
+# Configuration precedence (each layer overrides the previous):
+#   1. Built-in defaults
+#   2. ~/.zipthorn/config.yaml (global, per-user)
+#   3. ./.zipthorn.config.yaml (local, per-directory)
+#   4. CLI flags (highest priority)
+#
+# File locations:
+#   Global:  ~/.zipthorn/config.yaml
+#   Local:   ./.zipthorn.config.yaml (this file)
+#
+# Both files are optional. A missing file is not an error.
+# A malformed file or unknown key fails with an error message.
+
+limits:
+  # Maximum bytes to extract or generate (supports KB, MB, GB, GiB)
+  max_output_bytes: 256MB
+
+  # Maximum expansion ratio (declared size / compressed size)
+  max_expansion_ratio: 100x
+
+  # Maximum number of files to process
+  max_files: 10000
+
+  # Maximum directory nesting depth
+  max_depth: 32
+
+  # Maximum archive-within-archive nesting levels
+  max_nesting: 4
+
+thresholds:
+  # Expansion ratio treated as HIGH risk
+  expansion_ratio: 50x
+
+  # Declared output size treated as HIGH risk
+  declared_size: 1GB
+
+  # File count treated as HIGH risk
+  file_count: 10000
+
+  # Directory depth treated as HIGH risk
+  depth: 16
+
+  # Nested archive count treated as HIGH risk
+  nesting: 2

@@ -64,8 +64,6 @@ create       Generate a controlled test archive
 inspect      Analyze an archive
 detect       Assess archive risk
 test         Safely test archive extraction
-benchmark    Benchmark archive processing
-fuzz         Generate varied pathological fixtures
 ```
 
 Run:
@@ -75,6 +73,41 @@ zipthorn --help
 ```
 
 for the complete CLI reference.
+
+---
+
+## Configuration
+
+zipthorn supports configuration files to set default resource limits and detection thresholds.
+
+Configuration is resolved in order of precedence:
+
+1. Built-in defaults
+2. `~/.zipthorn/config.yaml` (global, per-user)
+3. `./.zipthorn.config.yaml` (local, per-directory)
+4. CLI flags (highest priority)
+
+Example configuration:
+
+```yaml
+limits:
+  max_output_bytes: 256MB
+  max_expansion_ratio: 100x
+  max_files: 10000
+  max_depth: 32
+  max_nesting: 4
+
+thresholds:
+  expansion_ratio: 50x
+  declared_size: 1GB
+  file_count: 10000
+  depth: 16
+  nesting: 2
+```
+
+Both files are optional. Missing files use built-in defaults. Malformed files or unknown keys fail immediately.
+
+See [docs/configuration.md](docs/configuration.md) for the complete configuration reference.
 
 ---
 
@@ -214,52 +247,6 @@ ERROR
 The test runner tracks resource consumption and stops processing when configured limits are reached.
 
 This makes it useful for testing whether a crawler or archive processor **fails safely instead of exhausting the host system**.
-
----
-
-## Benchmarking
-
-Measure archive-processing behavior:
-
-```bash
-zipthorn benchmark test.zip
-```
-
-Metrics can include:
-
-* Wall-clock time
-* CPU time
-* Extraction throughput
-* Files per second
-* Bytes processed
-* Compression ratio
-* Memory usage
-* Allocations
-
-JSON output makes benchmark results suitable for CI and regression testing.
-
----
-
-## Fuzzing
-
-Generate varied pathological fixtures:
-
-```bash
-zipthorn fuzz --output ./fixtures
-```
-
-The fuzzing engine varies archive characteristics such as:
-
-* File counts
-* File sizes
-* Compression ratios
-* Directory depth
-* Nesting
-* Names
-* Metadata
-* Entry ordering
-
-A deterministic seed can be used to reproduce a particular fixture.
 
 ---
 

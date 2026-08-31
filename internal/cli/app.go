@@ -8,8 +8,17 @@ import (
 	"os"
 )
 
-// Version is overridable at build time via -ldflags.
-var Version = "0.0.0-dev"
+// Version information, set by main via SetVersion.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// SetVersion sets the version information for display.
+func SetVersion(v, c, d string) {
+	version, commit, date = v, c, d
+}
 
 type command struct {
 	name    string
@@ -24,6 +33,7 @@ var commands = []command{
 	{"test", "Safely test archive extraction", runTest},
 	{"benchmark", "Measure archive extraction performance", runBenchmark},
 	{"fuzz", "Generate fuzz fixtures for testing", runFuzz},
+	{"policy", "Show detection policy details", runPolicyCmd},
 }
 
 // Main runs the requested command and returns the process exit code.
@@ -38,7 +48,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return ExitOK
 	case "-v", "--version", "version":
-		fmt.Fprintf(stdout, "zipthorn %s\n", Version)
+		fmt.Fprintf(stdout, "zipthorn %s\n", version)
+		if commit != "none" {
+			fmt.Fprintf(stdout, "commit: %s\n", commit)
+		}
+		if date != "unknown" {
+			fmt.Fprintf(stdout, "built: %s\n", date)
+		}
 		return ExitOK
 	}
 

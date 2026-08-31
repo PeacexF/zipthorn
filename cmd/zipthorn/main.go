@@ -8,6 +8,14 @@ import (
 	"github.com/PeacexF/zipthorn/internal/cli"
 )
 
+// Version information set by GoReleaser via ldflags
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	cli.SetVersion(version, commit, date)
 	os.Exit(cli.Run())
 }

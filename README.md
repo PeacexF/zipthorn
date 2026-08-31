@@ -64,6 +64,9 @@ create       Generate a controlled test archive
 inspect      Analyze an archive
 detect       Assess archive risk
 test         Safely test archive extraction
+policy       Show detection policy details
+benchmark    Measure archive extraction performance
+fuzz         Generate fuzz fixtures for testing
 ```
 
 Run:
@@ -219,6 +222,38 @@ Recommendation: REJECT
 ```
 
 Detection thresholds can be configured for different environments.
+
+### Detection Policies
+
+zipthorn includes named detection policies with pre-configured thresholds for common use cases:
+
+```bash
+# List available policies
+zipthorn policy --list
+
+# Inspect a specific policy
+zipthorn policy strict
+```
+
+Available policies:
+
+* **default** - Balanced detection suitable for general use
+* **strict** - Conservative thresholds for untrusted sources
+* **permissive** - Relaxed thresholds for known-safe sources
+* **web** - Tuned for user-uploaded content in web applications
+* **ci** - Suitable for CI/CD artifact inspection
+
+Use a policy with the detect command:
+
+```bash
+# Use strict policy for untrusted uploads
+zipthorn detect --policy strict upload.zip
+
+# Use permissive policy for internal artifacts
+zipthorn detect --policy permissive build-artifact.zip
+```
+
+Policies control detection thresholds and can disable specific rules. For example, the `ci` policy disables duplicate entry detection since build artifacts often contain duplicates.
 
 ---
 

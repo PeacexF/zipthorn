@@ -20,6 +20,7 @@ var categoryLabels = map[string]string{
 
 func runDetect(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
+	var policyName string
 	fs := newFlagSet("detect", stderr, &cf)
 
 	cfg, err := config.Load()
@@ -28,6 +29,7 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 	}
 
 	th := cfg.Thresholds
+	fs.StringVar(&policyName, "policy", "", "use a named detection policy (default, strict, permissive, web, ci)")
 	fs.Float64Var(&th.ExpansionRatio, "threshold-ratio", th.ExpansionRatio, "expansion ratio treated as HIGH risk")
 	sizeVar(fs, &th.DeclaredSize, "threshold-size", "declared output size treated as HIGH risk")
 	fs.Int64Var(&th.FileCount, "threshold-files", th.FileCount, "file count treated as HIGH risk")
@@ -53,7 +55,16 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 		return coded(code, err)
 	}
 
-	a := detector.Assess(info, th)
+	var a detector.Assessment
+	if policyName != "" {
+		a, err = detector.AssessWithPolicy(info, policyName)
+		if err != nil {
+			return coded(ExitError, err)
+		}
+	} else {
+		a = detector.Assess(info, th)
+	}
+
 	out := newOutput(stdout, stderr, cf.json)
 	if err := out.Emit(&a, func(w io.Writer) { writeDetect(w, &a, cf) }); err != nil {
 		return err

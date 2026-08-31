@@ -58,12 +58,9 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestStubsReportUnimplemented(t *testing.T) {
-	for _, cmd := range []string{"test"} {
-		code, _, _ := run(t, cmd)
-		if code != cli.ExitUnsupported {
-			t.Errorf("%s: code = %d, want %d", cmd, code, cli.ExitUnsupported)
-		}
-	}
+	// All MVP commands are now implemented
+	// This test remains as a placeholder for future unimplemented commands
+	t.Skip("No unimplemented commands in current milestone")
 }
 
 func TestBadFlagIsUsageError(t *testing.T) {
@@ -74,13 +71,8 @@ func TestBadFlagIsUsageError(t *testing.T) {
 }
 
 func TestJSONStubOutput(t *testing.T) {
-	code, stdout, _ := run(t, "test", "--json")
-	if code != cli.ExitUnsupported {
-		t.Fatalf("code = %d, want %d", code, cli.ExitUnsupported)
-	}
-	if !strings.Contains(stdout, `"status": "not_implemented"`) {
-		t.Errorf("stdout = %q", stdout)
-	}
+	// The test command is now implemented, so this test is no longer valid
+	t.Skip("test command is now implemented")
 }
 
 func TestCommandHelpExitsCleanly(t *testing.T) {

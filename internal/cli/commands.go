@@ -60,7 +60,3 @@ func notImplemented(name string, args []string, stdout, stderr io.Writer) error 
 	)
 	return codef(ExitUnsupported, "%s is not implemented yet", name)
 }
-
-func runTest(args []string, stdout, stderr io.Writer) error {
-	return notImplemented("test", args, stdout, stderr)
-}

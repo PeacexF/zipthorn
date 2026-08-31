@@ -8,12 +8,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/generator"
 )
 
 func runCreate(args []string, stdout, stderr io.Writer) error {
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}

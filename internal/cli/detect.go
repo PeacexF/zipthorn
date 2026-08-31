@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
-	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/detector"
 )
 
@@ -23,7 +22,7 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 	var policyName string
 	fs := newFlagSet("detect", stderr, &cf)
 
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}

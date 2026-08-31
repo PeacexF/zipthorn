@@ -1,0 +1,42 @@
+# Example zipthorn configuration file
+#
+# Place this file as:
+#   - zipthorn.yaml in the current directory
+#   - ~/.config/zipthorn/config.yaml
+#   - Or specify with --config flag
+#
+# CLI flags always override config file values.
+
+limits:
+  # Maximum uncompressed bytes any operation may produce
+  max_output_bytes: 256MB
+  
+  # Maximum number of files in an archive
+  max_files: 10000
+  
+  # Maximum directory nesting depth
+  max_depth: 32
+  
+  # Maximum archive-within-archive nesting
+  max_nesting: 4
+  
+  # Maximum expansion ratio (declared size / compressed size)
+  max_expansion_ratio: 100.0
+
+thresholds:
+  # Detection engine boundaries - values at or above these are HIGH risk
+  
+  # Expansion ratio threshold
+  expansion_ratio: 50.0
+  
+  # Declared output size threshold
+  declared_size: 1GB
+  
+  # File count threshold
+  file_count: 10000
+  
+  # Directory depth threshold
+  depth: 16
+  
+  # Archive nesting threshold
+  nesting: 2

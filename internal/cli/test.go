@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
-	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/extractor"
 )
 
@@ -18,7 +17,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
 	fs := newFlagSet("test", stderr, &cf)
 
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}

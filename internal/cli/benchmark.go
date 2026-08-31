@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"github.com/PeacexF/zipthorn/internal/benchmark"
-	"github.com/PeacexF/zipthorn/internal/config"
 )
 
 func runBenchmark(args []string, stdout, stderr io.Writer) error {
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}

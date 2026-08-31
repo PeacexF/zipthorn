@@ -8,6 +8,9 @@ import (
 	"os"
 )
 
+// globalConfigPath holds the path from --config flag, if set
+var globalConfigPath string
+
 // Version information, set by main via SetVersion.
 var (
 	version = "dev"
@@ -38,10 +41,16 @@ var commands = []command{
 
 // Main runs the requested command and returns the process exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
+	// Reset global state for testing
+	globalConfigPath = ""
+	
 	if len(args) == 0 {
 		usage(stderr)
 		return ExitUsage
 	}
+
+	// Parse global --config flag before command dispatch
+	args = parseGlobalFlags(args)
 
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -79,6 +88,21 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	return ExitError
 }
 
+// parseGlobalFlags extracts global flags like --config and returns remaining args
+func parseGlobalFlags(args []string) []string {
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--config" && i+1 < len(args) {
+			globalConfigPath = args[i+1]
+			i++ // skip the value
+			continue
+		}
+		result = append(result, arg)
+	}
+	return result
+}
+
 func Run() int {
 	return Main(os.Args[1:], os.Stdout, os.Stderr)
 }
@@ -100,6 +124,7 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "  %-12s %s\n", c.name, c.summary)
 	}
 	fmt.Fprint(w, "\nGlobal:\n")
+	fmt.Fprintf(w, "  %-12s %s\n", "--config", "Load config from specific file")
 	fmt.Fprintf(w, "  %-12s %s\n", "--help", "Show this help")
 	fmt.Fprintf(w, "  %-12s %s\n", "--version", "Show version")
 	fmt.Fprint(w, "\nRun 'zipthorn <command> --help' for command-specific options.\n")

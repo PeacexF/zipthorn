@@ -27,11 +27,12 @@ const (
 	ProfileDepth     = "depth"
 	ProfileMetadata  = "metadata"
 	ProfileMixed     = "mixed"
+	ProfileFuzz      = "fuzz"
 )
 
 var profileNames = []string{
 	ProfileRatio, ProfileFileCount, ProfileNested,
-	ProfileDepth, ProfileMetadata, ProfileMixed,
+	ProfileDepth, ProfileMetadata, ProfileMixed, ProfileFuzz,
 }
 
 func Profiles() []string { return append([]string(nil), profileNames...) }

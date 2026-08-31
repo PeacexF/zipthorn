@@ -23,6 +23,7 @@ var commands = []command{
 	{"detect", "Assess archive risk", runDetect},
 	{"test", "Safely test archive extraction", runTest},
 	{"benchmark", "Measure archive extraction performance", runBenchmark},
+	{"fuzz", "Generate fuzz fixtures for testing", runFuzz},
 }
 
 // Main runs the requested command and returns the process exit code.

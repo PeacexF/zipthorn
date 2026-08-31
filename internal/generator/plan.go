@@ -137,6 +137,14 @@ func withDefaults(s Spec) Spec {
 		s.Depth = orDefault(s.Depth, within(8, l.MaxDepth))
 		s.Nesting = orDefault(s.Nesting, within(2, l.MaxNesting))
 		s.Ratio = orDefault(s.Ratio, defaultRatio(l))
+	case ProfileFuzz:
+		// Fuzz uses seed-driven randomization with safe defaults
+		s.DeclaredSize = orDefault(s.DeclaredSize, within(4*config.MB, l.MaxOutputBytes/2))
+		s.FileCount = orDefault(s.FileCount, within(int64(100), l.MaxFiles/2))
+		s.FileSize = orDefault(s.FileSize, 512)
+		s.Depth = orDefault(s.Depth, within(6, l.MaxDepth/2))
+		s.Nesting = orDefault(s.Nesting, within(1, l.MaxNesting/2))
+		s.Ratio = orDefault(s.Ratio, within(20, l.MaxExpansionRatio/2))
 	}
 	return s
 }
@@ -155,6 +163,8 @@ func buildPlan(s Spec) (*plan, error) {
 		return metadataPlan(s), nil
 	case ProfileMixed:
 		return mixedPlan(s), nil
+	case ProfileFuzz:
+		return fuzzPlan(s), nil
 	}
 	return nil, fmt.Errorf("%w %q", ErrUnknownProfile, s.Profile)
 }
@@ -307,3 +317,136 @@ func mixedPlan(s Spec) *plan {
 	}
 	return p
 }
+
+// fuzzPlan produces randomized combinations for robustness testing.
+// Uses the seed to generate varied but deterministic fixtures.
+func fuzzPlan(s Spec) *plan {
+	p := &plan{comment: "zipthorn fuzz fixture"}
+	
+	// Use a local RNG seeded from the spec to make mutations deterministic
+	rng := newFuzzRNG(s.Seed)
+	
+	// Randomize declared size within limits (50-100% of requested)
+	declaredSize := s.DeclaredSize/2 + rng.int64n(s.DeclaredSize/2)
+	
+	// Randomize file count (50-100% of requested)
+	fileCount := s.FileCount/2 + rng.int64n(s.FileCount/2+1)
+	if fileCount < 1 {
+		fileCount = 1
+	}
+	
+	// Randomize ratio (50-100% of requested)
+	ratio := s.Ratio/2 + rng.float64()*s.Ratio/2
+	if ratio < 1 {
+		ratio = 1
+	}
+	
+	// Add payload blobs with randomized characteristics
+	if declaredSize > 0 {
+		p.items = append(p.items, item{name: "payload/", dir: true})
+		blobCount := int64(1) + rng.int64n(fileCount/4+1)
+		if blobCount > fileCount {
+			blobCount = fileCount
+		}
+		p.items = append(p.items, blobs(declaredSize/2, blobCount, ratio)...)
+	}
+	
+	// Add small files with varied sizes
+	if fileCount > 0 {
+		p.items = append(p.items, item{name: "files/", dir: true})
+		smallCount := fileCount / 4
+		if smallCount < 1 {
+			smallCount = 1
+		}
+		for i := int64(0); i < smallCount; i++ {
+			// Randomize file sizes
+			size := s.FileSize/2 + rng.int64n(s.FileSize)
+			if size < 1 {
+				size = 1
+			}
+			p.items = append(p.items, item{
+				name:  fmt.Sprintf("files/f%05d.dat", i),
+				size:  size,
+				ratio: 2 + rng.float64()*4,
+			})
+		}
+	}
+	
+	// Add depth with randomization
+	if s.Depth > 0 {
+		p.items = append(p.items, item{name: "deep/", dir: true})
+		depth := 1 + rng.intn(s.Depth)
+		if depth > s.Depth {
+			depth = s.Depth
+		}
+		p.items = append(p.items, chain("deep/", depth, s.FileSize)...)
+	}
+	
+	// Sometimes add problematic filenames
+	if rng.intn(2) == 0 {
+		names := []string{"../escape.txt", "./dot.txt", "dup.txt"}
+		idx := rng.intn(len(names))
+		p.items = append(p.items, item{
+			name:  names[idx],
+			size:  s.FileSize,
+			ratio: 2,
+		})
+	}
+	
+	// Sometimes add duplicates
+	if rng.intn(3) == 0 {
+		p.items = append(p.items,
+			item{name: "dup.txt", size: s.FileSize, ratio: 2},
+			item{name: "dup.txt", size: s.FileSize, ratio: 2},
+		)
+	}
+	
+	// Sometimes add nesting
+	if s.Nesting > 0 && rng.intn(2) == 0 {
+		nestLevel := 1 + rng.intn(s.Nesting)
+		if nestLevel > s.Nesting {
+			nestLevel = s.Nesting
+		}
+		p.items = append(p.items, item{
+			name:   "nested/inner.zip",
+			store:  true,
+			nested: wrap(nestLevel-1, s.FileSize*4, ratio),
+		})
+	}
+	
+	return p
+}
+
+// fuzzRNG wraps deterministic random generation for fuzz plans
+type fuzzRNG struct {
+	state uint64
+}
+
+func newFuzzRNG(seed int64) *fuzzRNG {
+	return &fuzzRNG{state: uint64(seed) ^ 0x123456789ABCDEF0}
+}
+
+func (r *fuzzRNG) next() uint64 {
+	// Simple LCG for deterministic randomization
+	r.state = r.state*6364136223846793005 + 1442695040888963407
+	return r.state
+}
+
+func (r *fuzzRNG) int64n(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(r.next() % uint64(n))
+}
+
+func (r *fuzzRNG) intn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return int(r.next() % uint64(n))
+}
+
+func (r *fuzzRNG) float64() float64 {
+	return float64(r.next()&0x1FFFFFFFFFFFFF) / float64(0x1FFFFFFFFFFFFF)
+}
+

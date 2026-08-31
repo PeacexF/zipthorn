@@ -415,3 +415,170 @@ func TestNoPanicOnMalformed(t *testing.T) {
 		})
 	}
 }
+
+// buildRawZip writes an archive whose entries bypass the writer's own
+// bookkeeping, so headers can declare things the data does not support.
+func buildRawZip(t *testing.T, name string, build func(*zip.Writer)) string {
+	t.Helper()
+
+	buf := &bytes.Buffer{}
+	zw := zip.NewWriter(buf)
+	build(zw)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// TestUnsupportedMethod covers entries compressed with a method the extractor
+// cannot decode. Inspection must still report the archive, and extraction must
+// refuse rather than produce an empty or corrupt file.
+func TestUnsupportedMethod(t *testing.T) {
+	const bzip2Method uint16 = 12
+
+	payload := []byte("not really bzip2 data")
+	path := buildRawZip(t, "unsupported.zip", func(zw *zip.Writer) {
+		w, err := zw.CreateRaw(&zip.FileHeader{
+			Name:               "payload.bin",
+			Method:             bzip2Method,
+			CompressedSize64:   uint64(len(payload)),
+			UncompressedSize64: uint64(len(payload)),
+		})
+		if err != nil {
+			t.Fatalf("CreateRaw: %v", err)
+		}
+		if _, err := w.Write(payload); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	})
+
+	// Metadata is readable, and the method is reported as unsupported.
+	info, err := archive.Open(path)
+	if err != nil {
+		t.Fatalf("inspect should read metadata for an unsupported method: %v", err)
+	}
+	if archive.Supported(bzip2Method) {
+		t.Fatal("method 12 should not be reported as supported")
+	}
+	if len(info.Entries) != 1 || info.Entries[0].Method != bzip2Method {
+		t.Fatalf("entry method = %+v, want method %d", info.Entries, bzip2Method)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cli.Main([]string{"inspect", path}, &stdout, &stderr); code != cli.ExitOK {
+		t.Errorf("inspect = %d, want %d (stderr: %s)", code, cli.ExitOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "unsupported") {
+		t.Errorf("inspect should flag the method as unsupported:\n%s", stdout.String())
+	}
+
+	// Extraction must fail closed rather than write a bogus file.
+	stdout.Reset()
+	stderr.Reset()
+	dest := filepath.Join(t.TempDir(), "out")
+	if code := cli.Main([]string{"test", "--dest", dest, path}, &stdout, &stderr); code == cli.ExitOK {
+		t.Errorf("test should refuse an unsupported method:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(dest, "payload.bin")); err == nil {
+		t.Error("a refused entry must not be left on disk")
+	}
+}
+
+// TestConflictingMetadata covers a central directory that disagrees with the
+// data it points at: the declared uncompressed size is inflated far beyond what
+// the entry can actually produce. Detection reads the declaration, so it must
+// not be fooled into treating the lie as harmless, and extraction must not
+// trust it either.
+func TestConflictingMetadata(t *testing.T) {
+	payload := []byte("sixteen bytes!!!")
+	path := buildRawZip(t, "conflicting.zip", func(zw *zip.Writer) {
+		w, err := zw.CreateRaw(&zip.FileHeader{
+			Name:               "payload.bin",
+			Method:             zip.Store,
+			CompressedSize64:   uint64(len(payload)),
+			UncompressedSize64: 4 << 30, // 4GB declared against 16 stored bytes
+			CRC32:              0,
+		})
+		if err != nil {
+			t.Fatalf("CreateRaw: %v", err)
+		}
+		if _, err := w.Write(payload); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	})
+
+	info, err := archive.Open(path)
+	if err != nil {
+		t.Fatalf("inspect should read a self-contradictory central directory: %v", err)
+	}
+	if info.DeclaredSize != 4<<30 {
+		t.Errorf("declared size = %d, want the header's 4GB claim", info.DeclaredSize)
+	}
+
+	// The declaration alone is enough to reject: a scanner that believes it
+	// would allocate 4GB for a 16-byte entry.
+	a := detector.Assess(info, config.Default().Thresholds)
+	if a.Recommendation != detector.Reject {
+		t.Errorf("recommendation = %s, want %s for a 4GB declaration",
+			a.Recommendation, detector.Reject)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cli.Main([]string{"detect", path}, &stdout, &stderr); code != cli.ExitRisk {
+		t.Errorf("detect = %d, want %d (stderr: %s)", code, cli.ExitRisk, stderr.String())
+	}
+
+	// Extraction must stop on the declared size rather than trust it and then
+	// discover the truth mid-copy.
+	stdout.Reset()
+	stderr.Reset()
+	dest := filepath.Join(t.TempDir(), "out")
+	code := cli.Main([]string{"test", "--dest", dest, path}, &stdout, &stderr)
+	if code == cli.ExitOK {
+		t.Errorf("test should refuse a 4GB declaration:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "LIMIT_REACHED") {
+		t.Errorf("test should report a limit, got:\n%s", stdout.String())
+	}
+}
+
+// TestConflictingCRC covers metadata that lies about content rather than size:
+// the stored CRC does not match the bytes. Extraction must surface the
+// corruption instead of silently writing bad data.
+func TestConflictingCRC(t *testing.T) {
+	payload := []byte("payload with a deliberately wrong checksum")
+	path := buildRawZip(t, "badcrc.zip", func(zw *zip.Writer) {
+		w, err := zw.CreateRaw(&zip.FileHeader{
+			Name:               "payload.bin",
+			Method:             zip.Store,
+			CompressedSize64:   uint64(len(payload)),
+			UncompressedSize64: uint64(len(payload)),
+			CRC32:              0xDEADBEEF,
+		})
+		if err != nil {
+			t.Fatalf("CreateRaw: %v", err)
+		}
+		if _, err := w.Write(payload); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	})
+
+	if _, err := archive.Open(path); err != nil {
+		t.Fatalf("inspect should read metadata despite a bad CRC: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	dest := filepath.Join(t.TempDir(), "out")
+	if code := cli.Main([]string{"test", "--dest", dest, path}, &stdout, &stderr); code == cli.ExitOK {
+		t.Errorf("test should not pass an entry whose CRC does not match:\n%s", stdout.String())
+	}
+	// The failure must be the checksum, not an incidental limit trip.
+	if !strings.Contains(stdout.String()+stderr.String(), "checksum") {
+		t.Errorf("failure should name the checksum, got:\n%s%s", stdout.String(), stderr.String())
+	}
+}

@@ -87,3 +87,47 @@ func TestCommandHelpExitsCleanly(t *testing.T) {
 		t.Errorf("help must not surface as an error:\n%s", stderr)
 	}
 }
+
+// Options must work on either side of the archive path: Go's flag package stops
+// at the first operand, so the CLI permutes arguments before parsing.
+func TestFlagsMayFollowTheArchivePath(t *testing.T) {
+	p := writeZip(t, "docs/notes.txt")
+
+	forms := [][]string{
+		{"test", "--max-bytes", "64MB", "--timeout", "5", p},
+		{"test", p, "--max-bytes", "64MB", "--timeout", "5"},
+		{"test", "--max-bytes", "64MB", p, "--timeout", "5"},
+		{"test", p, "--max-bytes=64MB", "--quiet"},
+	}
+
+	for _, args := range forms {
+		code, stdout, stderr := run(t, args...)
+		if code != cli.ExitOK {
+			t.Errorf("%v: code = %d, want %d (stdout: %s stderr: %s)",
+				args, code, cli.ExitOK, stdout, stderr)
+		}
+	}
+}
+
+// A trailing option must actually take effect, not merely be tolerated.
+func TestTrailingFlagIsApplied(t *testing.T) {
+	p := writeZip(t, "docs/notes.txt")
+
+	code, stdout, _ := run(t, "test", p, "--max-bytes", "1")
+	if code != cli.ExitRisk {
+		t.Fatalf("code = %d, want %d (a 1-byte limit must trip)\n%s", code, cli.ExitRisk, stdout)
+	}
+	if !strings.Contains(stdout, "LIMIT_REACHED") {
+		t.Errorf("output should report the limit:\n%s", stdout)
+	}
+}
+
+// Everything after -- is an operand, even if it looks like a flag.
+func TestDoubleDashEndsFlagParsing(t *testing.T) {
+	p := writeZip(t, "docs/notes.txt")
+
+	code, _, stderr := run(t, "inspect", "--", p)
+	if code != cli.ExitOK {
+		t.Errorf("code = %d, want %d (stderr: %s)", code, cli.ExitOK, stderr)
+	}
+}

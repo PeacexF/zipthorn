@@ -110,6 +110,34 @@ thresholds:
 
 Both files are optional. Missing files use built-in defaults. Malformed files or unknown keys fail immediately.
 
+To load one specific file and skip discovery entirely:
+
+```bash
+zipthorn detect upload.zip --config ./ci-policy.yaml
+```
+
+To see the effective policy and which layer decided each part of it, add
+`--verbose`:
+
+```text
+Configuration
+  Files:            .zipthorn.config.yaml
+
+  limits.max_output_bytes      256MB        default
+  limits.max_expansion_ratio   100x         default
+  limits.max_files             500          local (.zipthorn.config.yaml)
+  limits.max_depth             32           default
+  limits.max_nesting           4            default
+  thresholds.expansion_ratio   20x          local (.zipthorn.config.yaml)
+  thresholds.declared_size     1GB          default
+  thresholds.file_count        10000        default
+  thresholds.depth             4            flag
+  thresholds.nesting           2            default
+```
+
+The same record rides along in `--json` under a `config` key, with a `sources`
+block naming the file or layer behind every field.
+
 See [docs/configuration.md](docs/configuration.md) for the complete configuration reference.
 
 ---
@@ -146,6 +174,30 @@ zipthorn create \
   --max-expansion 100x
 ```
 
+Output:
+
+```text
+zipthorn
+
+Created
+  Path:             test.zip
+  Profile:          ratio
+  Seed:             1
+
+Archive
+  Compressed:       486.7 KB
+  Declared output:  32 MB
+  Expansion:        67.3x
+  Files:            1
+  Directories:      1
+  Max depth:        1
+  Archive nesting:  0
+```
+
+Generation **fails closed**: if a profile would exceed `--max-output` or
+`--max-expansion`, nothing is written and the command exits 3. Passing the same
+`--seed` and parameters reproduces a byte-identical archive.
+
 The generator is intended to produce **test fixtures**, not uncontrolled payloads.
 
 ---
@@ -164,25 +216,27 @@ Example output:
 zipthorn
 
 Archive
-  Compressed:       8.2 MB
-  Declared output:  512 MB
-  Expansion:        62.4x
-  Files:            10,000
-  Max depth:        8
+  Path:             test.zip
+  Compressed:       486.7 KB
+  Declared output:  32 MB
+  Expansion:        67.3x
+  Files:            1
+  Directories:      1
+  Max depth:        1
 
 Compression
-  DEFLATE:          10,000 entries
+  STORE:            1 entry
+  DEFLATE:          1 entry
 
-Risk
-  Compression:      HIGH
-  File count:       MEDIUM
-  Nesting:          LOW
-  Paths:             LOW
-
-Recommendation: REVIEW
+Notes
+  Comment:          22 bytes
 ```
 
-JSON output:
+`inspect` reports what the archive *claims*; it never extracts and never judges.
+Use `detect` for the verdict.
+
+Add `--verbose` for a per-entry listing, `--quiet` for a single summary line, or
+`--json` for structured output:
 
 ```bash
 zipthorn inspect test.zip --json
@@ -212,14 +266,31 @@ The detector evaluates characteristics such as:
 Example:
 
 ```text
-Risk assessment: HIGH
+zipthorn
 
-Triggered rules:
-  HIGH_COMPRESSION_RATIO
-  EXCESSIVE_FILE_COUNT
+Archive
+  Path:             test.zip
+  Compressed:       486.7 KB
+  Declared output:  32 MB
+  Expansion:        67.3x
+  Files:            1
+  Max depth:        1
 
+Risk
+  Compression:      HIGH
+  File count:       LOW
+  Nesting:          LOW
+  Paths:            LOW
+
+Indicators
+  HIGH   HIGH_COMPRESSION_RATIO   archive expands 67.3x against a 50x threshold
+
+Score: 30/100
 Recommendation: REJECT
 ```
+
+A `REJECT` exits with status 3. That is a verdict, not a failure, so it prints no
+error line — see [Exit codes](#exit-codes).
 
 Detection thresholds can be configured for different environments.
 
@@ -266,10 +337,29 @@ zipthorn test test.zip \
   --max-bytes 256MB \
   --max-files 10000 \
   --max-depth 10 \
-  --timeout 5s
+  --timeout 5
 ```
 
-Possible results:
+`--timeout` is a whole number of seconds; `0` means no timeout.
+
+Example output:
+
+```text
+zipthorn
+
+Archive
+  Path:             test.zip
+
+Result
+  Status:           LIMIT_REACHED
+  Elapsed:          38.5µs
+  Files processed:  0
+  Bytes produced:   0 B
+  Limit reached:    bytes
+  Reason:           byte limit exceeded: declared size 33554432 exceeds max 8388608
+```
+
+Possible statuses:
 
 ```text
 PASS
@@ -279,9 +369,35 @@ INVALID_ARCHIVE
 ERROR
 ```
 
-The test runner tracks resource consumption and stops processing when configured limits are reached.
+The test runner validates the whole central directory against the limits before
+writing anything, then enforces them again as bytes land. Partial output is
+removed on failure unless `--no-clean` is given.
 
 This makes it useful for testing whether a crawler or archive processor **fails safely instead of exhausting the host system**.
+
+---
+
+## Exit codes
+
+Every command uses the same convention, so `zipthorn` composes in shell pipelines
+and CI gates.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success — archive accepted, or the operation completed |
+| 1 | Error — something went wrong (I/O, unreadable config) |
+| 2 | Usage — bad flags or arguments |
+| 3 | Risk — archive rejected, a limit was reached, or the input was not a valid archive |
+| 4 | Unsupported — the requested operation is not available |
+
+Code 3 is a **verdict, not a crash**: it is what a CI gate should key on, and it
+is printed without an error line.
+
+```bash
+if ! zipthorn detect --policy strict upload.zip --quiet; then
+  echo "rejected"
+fi
+```
 
 ---
 
@@ -344,6 +460,61 @@ Compare how different ZIP implementations handle suspicious archives.
 
 Keep pathological archives as regression fixtures and verify that resource limits remain enforced.
 
+
+---
+
+## Library use
+
+The CLI is a thin shell over an embeddable Go API. The same inspection,
+detection, extraction, and generation are importable:
+
+```bash
+go get github.com/PeacexF/zipthorn
+```
+
+A gate for an upload path — inspect, assess, and only then extract:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/PeacexF/zipthorn"
+)
+
+func main() {
+	cfg := zipthorn.DefaultConfig()
+
+	info, err := zipthorn.Inspect("upload.zip")
+	if err != nil {
+		log.Fatal(err) // unparseable is a rejection, not a retry
+	}
+
+	if a := zipthorn.Detect(info, cfg.Thresholds); a.Recommendation == zipthorn.Reject {
+		for _, ind := range a.Indicators {
+			fmt.Printf("%s: %s\n", ind.ID, ind.Detail)
+		}
+		return
+	}
+
+	res := zipthorn.Extract(context.Background(), "upload.zip", zipthorn.ExtractOptions{
+		Limits:      cfg.Limits,
+		DestDir:     "./out",
+		CleanOnFail: true,
+	})
+	fmt.Println(res.Status, res.BytesProduced)
+}
+```
+
+Detection never extracts, so it is safe to run on untrusted input. `Extract`
+reports refusal in `res.Status` rather than as an error, mirroring the CLI.
+
+Named policies, bounded fixture generation, and benchmarking are all reachable
+too — see the [package documentation](https://pkg.go.dev/github.com/PeacexF/zipthorn)
+and [docs/architecture.md](docs/architecture.md).
 
 ---
 

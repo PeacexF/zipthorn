@@ -12,7 +12,7 @@ import (
 )
 
 func runBenchmark(args []string, stdout, stderr io.Writer) error {
-	cfg, err := loadConfig()
+	res, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}
@@ -20,7 +20,7 @@ func runBenchmark(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
 	fs := newFlagSet("benchmark", stderr, &cf)
 
-	limits := cfg.Limits
+	limits := res.Config.Limits
 	sizeVar(fs, &limits.MaxOutputBytes, "max-bytes", "maximum bytes to extract")
 	ratioVar(fs, &limits.MaxExpansionRatio, "max-ratio", "maximum expansion ratio")
 	fs.Int64Var(&limits.MaxFiles, "max-files", limits.MaxFiles, "maximum files to extract")
@@ -46,6 +46,8 @@ func runBenchmark(args []string, stdout, stderr io.Writer) error {
 		fs.Usage()
 		return codef(ExitUsage, "expected exactly one archive path")
 	}
+	markFlagOverrides(fs, res, limitFlagKeys("max-bytes", "max-ratio"))
+	res.Config.Limits = limits
 
 	archivePath := fs.Arg(0)
 	if _, err := os.Stat(archivePath); err != nil {
@@ -82,10 +84,13 @@ func runBenchmark(args []string, stdout, stderr io.Writer) error {
 		}
 
 		if cf.json {
-			return printJSON(stdout, m)
+			return printJSON(stdout, withConfig(m, res))
 		}
 
 		printBenchmarkSingle(stdout, m)
+		if cf.verbose {
+			writeConfig(stdout, res)
+		}
 		return nil
 	}
 
@@ -96,14 +101,17 @@ func runBenchmark(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if cf.json {
-		output := map[string]interface{}{
+		output := map[string]any{
 			"runs":      results,
 			"aggregate": agg,
 		}
-		return printJSON(stdout, output)
+		return printJSON(stdout, withConfig(output, res))
 	}
 
 	printBenchmarkMultiple(stdout, results, agg)
+	if cf.verbose {
+		writeConfig(stdout, res)
+	}
 	return nil
 }
 

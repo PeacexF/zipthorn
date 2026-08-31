@@ -52,10 +52,24 @@ jobs:
             exit 1
           fi
 
-      #- name: go mod tidy
-      #  run: |
-      #    go mod tidy
-      #    git diff --exit-code go.mod go.sum
+      - name: go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+  fuzz:
+    name: fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go test -run=NONE -fuzz=FuzzGenerator -fuzztime=60s ./internal/generator/
+      - run: go test -run=NONE -fuzz=FuzzExtractor -fuzztime=60s ./internal/extractor/
 
   vuln:
     name: govulncheck

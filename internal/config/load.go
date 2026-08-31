@@ -9,43 +9,72 @@ import (
 	"strings"
 )
 
-// Load reads configuration from the standard file hierarchy.
+// Resolve reads configuration from the standard file hierarchy and records
+// which layer supplied each field.
 // Precedence (each layer overrides the previous):
 //  1. Default()
 //  2. ~/.zipthorn/config.yaml (if present)
 //  3. ./.zipthorn.config.yaml (if present)
 //
 // A missing file is not an error. A malformed file or unknown key fails closed.
-func Load() (Config, error) {
-	cfg := Default()
+func Resolve() (*Resolved, error) {
+	r := newResolved()
 
-	home, err := os.UserHomeDir()
-	if err == nil {
-		globalPath := filepath.Join(home, ".zipthorn", "config.yaml")
-		if err := loadFile(globalPath, &cfg); err != nil && !os.IsNotExist(err) {
-			return cfg, fmt.Errorf("%s: %w", globalPath, err)
+	if home, err := os.UserHomeDir(); err == nil {
+		globalPath := filepath.Join(home, filepath.FromSlash(GlobalFileName))
+		if err := r.apply(globalPath, LayerGlobal, false); err != nil {
+			return r, err
 		}
 	}
 
-	localPath := ".zipthorn.config.yaml"
-	if err := loadFile(localPath, &cfg); err != nil && !os.IsNotExist(err) {
-		return cfg, fmt.Errorf("%s: %w", localPath, err)
+	if err := r.apply(LocalFileName, LayerLocal, false); err != nil {
+		return r, err
 	}
 
-	return cfg, nil
+	return r, nil
+}
+
+// ResolveFrom reads configuration from a specific file, skipping discovery.
+// The file must exist; a missing file is an error.
+func ResolveFrom(path string) (*Resolved, error) {
+	r := newResolved()
+	if err := r.apply(path, LayerFile, true); err != nil {
+		return r, err
+	}
+	return r, nil
+}
+
+// apply layers one file over r. When required is false a missing file is
+// skipped; every other failure is reported.
+func (r *Resolved) apply(path, layer string, required bool) error {
+	origin := Origin{Layer: layer, Source: path}
+	err := loadFile(path, &r.Config, func(key string) { r.mark(key, origin) })
+	switch {
+	case err == nil:
+		r.files = append(r.files, path)
+		return nil
+	case os.IsNotExist(err) && !required:
+		return nil
+	default:
+		return fmt.Errorf("%s: %w", path, err)
+	}
+}
+
+// Load reads configuration from the standard file hierarchy.
+// It is Resolve without the provenance record.
+func Load() (Config, error) {
+	r, err := Resolve()
+	return r.Config, err
 }
 
 // LoadFrom reads configuration from a specific file path.
 // The file must exist; a missing file is an error.
 func LoadFrom(path string) (Config, error) {
-	cfg := Default()
-	if err := loadFile(path, &cfg); err != nil {
-		return cfg, fmt.Errorf("%s: %w", path, err)
-	}
-	return cfg, nil
+	r, err := ResolveFrom(path)
+	return r.Config, err
 }
 
-func loadFile(path string, cfg *Config) error {
+func loadFile(path string, cfg *Config, seen func(key string)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -89,6 +118,9 @@ func loadFile(path string, cfg *Config) error {
 
 		if err := setField(section, key, value, cfg); err != nil {
 			return fmt.Errorf("line %d: %w", lineNum, err)
+		}
+		if seen != nil {
+			seen(section + "." + key)
 		}
 	}
 

@@ -207,10 +207,82 @@ This fail-closed approach ensures typos and mistakes are caught immediately rath
 
 ## Viewing Effective Configuration
 
-Use `--verbose` or `--json` to see the effective configuration after all layers are applied:
+The commands that consume configuration — `create`, `detect`, `test`, and
+`benchmark` — can report the values they resolved and which layer supplied each
+one. (`inspect` reads no policy, so it has no configuration to report.)
+
+With `--verbose`:
 
 ```bash
-zipthorn inspect --verbose archive.zip
+zipthorn detect --verbose --threshold-depth 4 archive.zip
 ```
 
-This shows which values came from defaults, files, or flags.
+```text
+Configuration
+  Files:            .zipthorn.config.yaml
+
+  limits.max_output_bytes      256MB        default
+  limits.max_expansion_ratio   100x         default
+  limits.max_files             500          local (.zipthorn.config.yaml)
+  limits.max_depth             32           default
+  limits.max_nesting           4            default
+  thresholds.expansion_ratio   20x          local (.zipthorn.config.yaml)
+  thresholds.declared_size     1GB          default
+  thresholds.file_count        10000        default
+  thresholds.depth             4            flag
+  thresholds.nesting           2            default
+```
+
+`Files` lists the config files that were actually read, in the order they were
+applied. Each field then names its winning layer:
+
+| Layer | Meaning |
+|-------|---------|
+| `default` | No file or flag touched this field; it holds the built-in default |
+| `global` | Set by `~/.zipthorn/config.yaml` |
+| `local` | Set by `./.zipthorn.config.yaml` |
+| `file` | Set by the file named in `--config` |
+| `flag` | Set by a CLI flag the user typed |
+| `policy` | Set by a named `--policy`, which supersedes the whole `thresholds` section |
+
+A flag left unset never appears as `flag`, so the report distinguishes a value
+you configured from one you merely accepted.
+
+The rendered values use the same spellings the config file accepts, so any line
+of the report can be pasted back into a config file.
+
+### In JSON
+
+`--json` carries the same record under a `config` key:
+
+```bash
+zipthorn detect --json archive.zip
+```
+
+```json
+{
+  "recommendation": "REJECT",
+  "config": {
+    "limits": { "max_files": 500, "...": "..." },
+    "thresholds": { "depth": 4, "...": "..." },
+    "sources": {
+      "files": [".zipthorn.config.yaml"],
+      "fields": [
+        {
+          "key": "thresholds.depth",
+          "value": "4",
+          "origin": { "layer": "flag" }
+        },
+        {
+          "key": "limits.max_files",
+          "value": "500",
+          "origin": { "layer": "local", "source": ".zipthorn.config.yaml" }
+        }
+      ]
+    }
+  }
+}
+```
+
+`sources.fields` always lists every field, so a CI job can assert on the whole
+effective policy rather than only the parts that were overridden.

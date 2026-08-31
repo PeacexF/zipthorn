@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
+	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/detector"
 )
 
@@ -22,12 +23,12 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 	var policyName string
 	fs := newFlagSet("detect", stderr, &cf)
 
-	cfg, err := loadConfig()
+	res, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}
 
-	th := cfg.Thresholds
+	th := res.Config.Thresholds
 	fs.StringVar(&policyName, "policy", "", "use a named detection policy (default, strict, permissive, web, ci)")
 	fs.Float64Var(&th.ExpansionRatio, "threshold-ratio", th.ExpansionRatio, "expansion ratio treated as HIGH risk")
 	sizeVar(fs, &th.DeclaredSize, "threshold-size", "declared output size treated as HIGH risk")
@@ -44,6 +45,7 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 		fs.Usage()
 		return codef(ExitUsage, "expected exactly one archive path")
 	}
+	markFlagOverrides(fs, res, thresholdFlagKeys)
 
 	info, err := archive.Open(fs.Arg(0))
 	if err != nil {
@@ -60,12 +62,15 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return coded(ExitError, err)
 		}
+		// A named policy supersedes every configured threshold.
+		res.SetThresholds(a.Thresholds, config.LayerPolicy, policyName)
 	} else {
+		res.Config.Thresholds = th
 		a = detector.Assess(info, th)
 	}
 
 	out := newOutput(stdout, stderr, cf.json)
-	if err := out.Emit(&a, func(w io.Writer) { writeDetect(w, &a, cf) }); err != nil {
+	if err := out.Emit(withConfig(&a, res), func(w io.Writer) { writeDetect(w, &a, res, cf) }); err != nil {
 		return err
 	}
 	if a.Recommendation == detector.Reject {
@@ -75,7 +80,7 @@ func runDetect(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func writeDetect(w io.Writer, a *detector.Assessment, cf commonFlags) {
+func writeDetect(w io.Writer, a *detector.Assessment, res *config.Resolved, cf commonFlags) {
 	f := a.Features
 	if cf.quiet {
 		fmt.Fprintf(w, "%s %s score %d/100%s\n",
@@ -110,6 +115,10 @@ func writeDetect(w io.Writer, a *detector.Assessment, cf commonFlags) {
 				}
 			}
 		}
+	}
+
+	if cf.verbose {
+		writeConfig(w, res)
 	}
 
 	fmt.Fprintf(w, "\nScore: %d/100\n", a.Score)

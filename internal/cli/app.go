@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // globalConfigPath holds the path from --config flag, if set
@@ -43,14 +44,19 @@ var commands = []command{
 func Main(args []string, stdout, stderr io.Writer) int {
 	// Reset global state for testing
 	globalConfigPath = ""
-	
+
 	if len(args) == 0 {
 		usage(stderr)
 		return ExitUsage
 	}
 
 	// Parse global --config flag before command dispatch
-	args = parseGlobalFlags(args)
+	args, err := parseGlobalFlags(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "zipthorn: %v\n\n", err)
+		usage(stderr)
+		return ExitUsage
+	}
 
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -74,7 +80,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	err := cmd.run(args[1:], stdout, stderr)
+	err = cmd.run(args[1:], stdout, stderr)
 	if err == nil {
 		return ExitOK
 	}
@@ -88,19 +94,35 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	return ExitError
 }
 
-// parseGlobalFlags extracts global flags like --config and returns remaining args
-func parseGlobalFlags(args []string) []string {
+// parseGlobalFlags pulls --config out of the argument list before dispatch, so
+// it can appear on either side of the subcommand. Both the "--config path" and
+// "--config=path" spellings are accepted, with or without the second dash.
+func parseGlobalFlags(args []string) ([]string, error) {
 	result := make([]string, 0, len(args))
+
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--config" && i+1 < len(args) {
-			globalConfigPath = args[i+1]
-			i++ // skip the value
+
+		name, value, hasValue := strings.Cut(arg, "=")
+		if name != "--config" && name != "-config" {
+			result = append(result, arg)
 			continue
 		}
-		result = append(result, arg)
+
+		if !hasValue {
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("flag needs an argument: %s", arg)
+			}
+			value = args[i+1]
+			i++
+		}
+		if value == "" {
+			return nil, fmt.Errorf("flag needs an argument: %s", arg)
+		}
+		globalConfigPath = value
 	}
-	return result
+
+	return result, nil
 }
 
 func Run() int {

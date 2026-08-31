@@ -8,11 +8,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/generator"
 )
 
 func runCreate(args []string, stdout, stderr io.Writer) error {
-	cfg, err := loadConfig()
+	res, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}
@@ -23,7 +24,7 @@ func runCreate(args []string, stdout, stderr io.Writer) error {
 		force bool
 		spec  generator.Spec
 	)
-	limits := cfg.Limits
+	limits := res.Config.Limits
 	spec.Level = generator.LevelDefault
 
 	fs := newFlagSet("create", stderr, &cf)
@@ -58,15 +59,17 @@ func runCreate(args []string, stdout, stderr io.Writer) error {
 		fs.Usage()
 		return codef(ExitUsage, "--output is required")
 	}
+	markFlagOverrides(fs, res, limitFlagKeys("max-output", "max-expansion"))
+	res.Config.Limits = limits
 	spec.Limits = limits
 
-	res, err := create(out, force, spec)
+	gen, err := create(out, force, spec)
 	if err != nil {
 		return err
 	}
 
 	o := newOutput(stdout, stderr, cf.json)
-	return o.Emit(res, func(w io.Writer) { writeCreate(w, res, cf) })
+	return o.Emit(withConfig(gen, res), func(w io.Writer) { writeCreate(w, gen, res, cf) })
 }
 
 // create writes the fixture, leaving no output behind if generation fails:
@@ -112,7 +115,7 @@ func exitFor(err error) int {
 	}
 }
 
-func writeCreate(w io.Writer, r *generator.Result, cf commonFlags) {
+func writeCreate(w io.Writer, r *generator.Result, res *config.Resolved, cf commonFlags) {
 	if cf.quiet {
 		fmt.Fprintf(w, "%s %s %s -> %s (%s) %s files\n",
 			r.Path, r.Profile, humanBytes(r.ArchiveSize), humanBytes(r.DeclaredSize),
@@ -136,13 +139,7 @@ func writeCreate(w io.Writer, r *generator.Result, cf commonFlags) {
 	field(w, "Max depth", humanCount(int64(r.MaxDepth)))
 	field(w, "Archive nesting", humanCount(int64(r.Nesting)))
 
-	if !cf.verbose {
-		return
+	if cf.verbose {
+		writeConfig(w, res)
 	}
-	section(w, "Limits")
-	field(w, "Max output", humanBytes(r.Limits.MaxOutputBytes))
-	field(w, "Max expansion", humanRatio(r.Limits.MaxExpansionRatio))
-	field(w, "Max files", humanCount(r.Limits.MaxFiles))
-	field(w, "Max depth", humanCount(int64(r.Limits.MaxDepth)))
-	field(w, "Max nesting", humanCount(int64(r.Limits.MaxNesting)))
 }

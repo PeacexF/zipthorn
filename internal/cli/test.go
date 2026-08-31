@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
+	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/extractor"
 )
 
@@ -17,12 +18,12 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	var cf commonFlags
 	fs := newFlagSet("test", stderr, &cf)
 
-	cfg, err := loadConfig()
+	res, err := loadConfig()
 	if err != nil {
 		return coded(ExitError, fmt.Errorf("config: %w", err))
 	}
 
-	limits := cfg.Limits
+	limits := res.Config.Limits
 	sizeVar(fs, &limits.MaxOutputBytes, "max-bytes", "maximum bytes to extract")
 	ratioVar(fs, &limits.MaxExpansionRatio, "max-ratio", "maximum expansion ratio")
 	fs.Int64Var(&limits.MaxFiles, "max-files", limits.MaxFiles, "maximum files to extract")
@@ -46,6 +47,8 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 		fs.Usage()
 		return codef(ExitUsage, "expected exactly one archive path")
 	}
+	markFlagOverrides(fs, res, limitFlagKeys("max-bytes", "max-ratio"))
+	res.Config.Limits = limits
 
 	archivePath := fs.Arg(0)
 	if _, err := os.Stat(archivePath); err != nil {
@@ -82,7 +85,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	result := extractor.Extract(ctx, archivePath, opts)
 
 	out := newOutput(stdout, stderr, cf.json)
-	if err := out.Emit(&result, func(w io.Writer) { writeTest(w, archivePath, &result, cf) }); err != nil {
+	if err := out.Emit(withConfig(&result, res), func(w io.Writer) { writeTest(w, archivePath, &result, res, cf) }); err != nil {
 		return err
 	}
 
@@ -106,7 +109,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
-func writeTest(w io.Writer, archivePath string, r *extractor.Result, cf commonFlags) {
+func writeTest(w io.Writer, archivePath string, r *extractor.Result, res *config.Resolved, cf commonFlags) {
 	if cf.quiet {
 		fmt.Fprintf(w, "%s\n", r.Status)
 		return
@@ -134,6 +137,10 @@ func writeTest(w io.Writer, archivePath string, r *extractor.Result, cf commonFl
 	}
 	if r.Error != "" && cf.verbose {
 		field(w, "Error", r.Error)
+	}
+
+	if cf.verbose {
+		writeConfig(w, res)
 	}
 
 	fmt.Fprintln(w)

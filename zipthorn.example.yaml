@@ -1,42 +1,53 @@
-# Example zipthorn configuration file
+# Example zipthorn configuration.
 #
-# Place this file as:
-#   - zipthorn.yaml in the current directory
-#   - ~/.config/zipthorn/config.yaml
-#   - Or specify with --config flag
+# Copy this to one of the paths zipthorn reads, or pass it explicitly:
 #
-# CLI flags always override config file values.
+#   ~/.zipthorn/config.yaml     global, per-user
+#   ./.zipthorn.config.yaml     local, per-directory (overrides the global file)
+#   zipthorn <cmd> --config <path>   loads exactly this file, skipping discovery
+#
+# Precedence, lowest first: built-in defaults, global file, local file, CLI flags.
+# Both files are optional. A missing file is not an error; a malformed file or an
+# unknown key fails immediately with a non-zero exit rather than falling back to
+# defaults.
+#
+# Run any command with --verbose to see the effective values and which layer set
+# each one.
+#
+# Sizes accept B/KB/MB/GB (and the KiB/MiB/GiB spellings); units are binary, so
+# 1KB is 1024 bytes. Ratios accept a bare number or a trailing "x".
 
 limits:
   # Maximum uncompressed bytes any operation may produce
   max_output_bytes: 256MB
-  
-  # Maximum number of files in an archive
+
+  # Maximum expansion ratio (declared size / compressed size)
+  max_expansion_ratio: 100x
+
+  # Maximum number of entries in an archive
   max_files: 10000
-  
+
   # Maximum directory nesting depth
   max_depth: 32
-  
+
   # Maximum archive-within-archive nesting
   max_nesting: 4
-  
-  # Maximum expansion ratio (declared size / compressed size)
-  max_expansion_ratio: 100.0
 
 thresholds:
-  # Detection engine boundaries - values at or above these are HIGH risk
-  
+  # Detection boundaries: values at or above these are treated as HIGH risk.
+  # Named policies (--policy strict, web, ci, ...) supersede this whole section.
+
   # Expansion ratio threshold
-  expansion_ratio: 50.0
-  
+  expansion_ratio: 50x
+
   # Declared output size threshold
   declared_size: 1GB
-  
+
   # File count threshold
   file_count: 10000
-  
+
   # Directory depth threshold
   depth: 16
-  
+
   # Archive nesting threshold
   nesting: 2

@@ -16,42 +16,42 @@ import (
 // Metrics captures the performance characteristics of an extraction operation.
 type Metrics struct {
 	// Archive characteristics
-	ArchivePath      string  `json:"archive_path"`
-	CompressedBytes  int64   `json:"compressed_bytes"`
-	DeclaredBytes    int64   `json:"declared_bytes"`
-	ExtractedBytes   int64   `json:"extracted_bytes"`
-	ExpansionRatio   float64 `json:"expansion_ratio"`
-	FileCount        int64   `json:"file_count"`
-	DirectoryCount   int64   `json:"directory_count"`
-	MaxDepth         int     `json:"max_depth"`
-	ArchiveNesting   int     `json:"archive_nesting"`
+	ArchivePath     string  `json:"archive_path"`
+	CompressedBytes int64   `json:"compressed_bytes"`
+	DeclaredBytes   int64   `json:"declared_bytes"`
+	ExtractedBytes  int64   `json:"extracted_bytes"`
+	ExpansionRatio  float64 `json:"expansion_ratio"`
+	FileCount       int64   `json:"file_count"`
+	DirectoryCount  int64   `json:"directory_count"`
+	MaxDepth        int     `json:"max_depth"`
+	ArchiveNesting  int     `json:"archive_nesting"`
 
 	// Performance metrics
-	WallTimeNanos    int64   `json:"wall_time_nanos"`
-	CPUTimeNanos     int64   `json:"cpu_time_nanos"`
-	ThroughputMBps   float64 `json:"throughput_mbps"`
-	FilesPerSecond   float64 `json:"files_per_second"`
-	AllocBytes       uint64  `json:"alloc_bytes"`
-	TotalAllocBytes  uint64  `json:"total_alloc_bytes"`
-	Mallocs          uint64  `json:"mallocs"`
-	HeapAllocBytes   uint64  `json:"heap_alloc_bytes"`
+	WallTimeNanos   int64   `json:"wall_time_nanos"`
+	CPUTimeNanos    int64   `json:"cpu_time_nanos"`
+	ThroughputMBps  float64 `json:"throughput_mbps"`
+	FilesPerSecond  float64 `json:"files_per_second"`
+	AllocBytes      uint64  `json:"alloc_bytes"`
+	TotalAllocBytes uint64  `json:"total_alloc_bytes"`
+	Mallocs         uint64  `json:"mallocs"`
+	HeapAllocBytes  uint64  `json:"heap_alloc_bytes"`
 
 	// Result
-	Status           string  `json:"status"` // COMPLETE, LIMIT_REACHED, ERROR
-	Error            string  `json:"error,omitempty"`
+	Status string `json:"status"` // COMPLETE, LIMIT_REACHED, ERROR
+	Error  string `json:"error,omitempty"`
 }
 
 // AggregateMetrics holds statistics across multiple runs.
 type AggregateMetrics struct {
-	Runs             int     `json:"runs"`
-	MeanWallNanos    int64   `json:"mean_wall_nanos"`
-	MinWallNanos     int64   `json:"min_wall_nanos"`
-	MaxWallNanos     int64   `json:"max_wall_nanos"`
-	MeanCPUNanos     int64   `json:"mean_cpu_nanos"`
-	MeanThroughput   float64 `json:"mean_throughput_mbps"`
-	MeanFilesPerSec  float64 `json:"mean_files_per_second"`
-	TotalAllocBytes  uint64  `json:"total_alloc_bytes"`
-	TotalMallocs     uint64  `json:"total_mallocs"`
+	Runs            int     `json:"runs"`
+	MeanWallNanos   int64   `json:"mean_wall_nanos"`
+	MinWallNanos    int64   `json:"min_wall_nanos"`
+	MaxWallNanos    int64   `json:"max_wall_nanos"`
+	MeanCPUNanos    int64   `json:"mean_cpu_nanos"`
+	MeanThroughput  float64 `json:"mean_throughput_mbps"`
+	MeanFilesPerSec float64 `json:"mean_files_per_second"`
+	TotalAllocBytes uint64  `json:"total_alloc_bytes"`
+	TotalMallocs    uint64  `json:"total_mallocs"`
 }
 
 // Run extracts an archive once and returns performance metrics.
@@ -102,7 +102,7 @@ func Run(ctx context.Context, archivePath string, limits config.Limits, destDir 
 		CleanOnFail: cleanOnFailure,
 	}
 	result := extractor.Extract(ctx, archivePath, opts)
-	
+
 	elapsed := time.Since(start)
 	cpuElapsed := getCPUTime() - cpuStart
 

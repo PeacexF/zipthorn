@@ -322,25 +322,25 @@ func mixedPlan(s Spec) *plan {
 // Uses the seed to generate varied but deterministic fixtures.
 func fuzzPlan(s Spec) *plan {
 	p := &plan{comment: "zipthorn fuzz fixture"}
-	
+
 	// Use a local RNG seeded from the spec to make mutations deterministic
 	rng := newFuzzRNG(s.Seed)
-	
+
 	// Randomize declared size within limits (50-100% of requested)
 	declaredSize := s.DeclaredSize/2 + rng.int64n(s.DeclaredSize/2)
-	
+
 	// Randomize file count (50-100% of requested)
 	fileCount := s.FileCount/2 + rng.int64n(s.FileCount/2+1)
 	if fileCount < 1 {
 		fileCount = 1
 	}
-	
+
 	// Randomize ratio (50-100% of requested)
 	ratio := s.Ratio/2 + rng.float64()*s.Ratio/2
 	if ratio < 1 {
 		ratio = 1
 	}
-	
+
 	// Add payload blobs with randomized characteristics
 	if declaredSize > 0 {
 		p.items = append(p.items, item{name: "payload/", dir: true})
@@ -350,7 +350,7 @@ func fuzzPlan(s Spec) *plan {
 		}
 		p.items = append(p.items, blobs(declaredSize/2, blobCount, ratio)...)
 	}
-	
+
 	// Add small files with varied sizes
 	if fileCount > 0 {
 		p.items = append(p.items, item{name: "files/", dir: true})
@@ -371,7 +371,7 @@ func fuzzPlan(s Spec) *plan {
 			})
 		}
 	}
-	
+
 	// Add depth with randomization
 	if s.Depth > 0 {
 		p.items = append(p.items, item{name: "deep/", dir: true})
@@ -381,7 +381,7 @@ func fuzzPlan(s Spec) *plan {
 		}
 		p.items = append(p.items, chain("deep/", depth, s.FileSize)...)
 	}
-	
+
 	// Sometimes add problematic filenames
 	if rng.intn(2) == 0 {
 		names := []string{"../escape.txt", "./dot.txt", "dup.txt"}
@@ -392,7 +392,7 @@ func fuzzPlan(s Spec) *plan {
 			ratio: 2,
 		})
 	}
-	
+
 	// Sometimes add duplicates
 	if rng.intn(3) == 0 {
 		p.items = append(p.items,
@@ -400,7 +400,7 @@ func fuzzPlan(s Spec) *plan {
 			item{name: "dup.txt", size: s.FileSize, ratio: 2},
 		)
 	}
-	
+
 	// Sometimes add nesting
 	if s.Nesting > 0 && rng.intn(2) == 0 {
 		nestLevel := 1 + rng.intn(s.Nesting)
@@ -413,7 +413,7 @@ func fuzzPlan(s Spec) *plan {
 			nested: wrap(nestLevel-1, s.FileSize*4, ratio),
 		})
 	}
-	
+
 	return p
 }
 
@@ -449,4 +449,3 @@ func (r *fuzzRNG) intn(n int) int {
 func (r *fuzzRNG) float64() float64 {
 	return float64(r.next()&0x1FFFFFFFFFFFFF) / float64(0x1FFFFFFFFFFFFF)
 }
-

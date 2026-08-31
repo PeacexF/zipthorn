@@ -27,6 +27,15 @@ func FuzzExtractor(f *testing.F) {
 		spec := generator.Spec{
 			Profile: generator.ProfileFuzz,
 			Seed:    seed,
+			// Keep each iteration cheap: the default 256MB budget is far too
+			// heavy to build once per execution across parallel workers.
+			Limits: config.Limits{
+				MaxOutputBytes:    4 * config.MB,
+				MaxExpansionRatio: 100,
+				MaxFiles:          500,
+				MaxDepth:          12,
+				MaxNesting:        3,
+			},
 		}
 
 		_, err := generator.Generate(&buf, spec)
@@ -44,10 +53,10 @@ func FuzzExtractor(f *testing.F) {
 		// Extract with safe limits
 		opts := Options{
 			Limits: config.Limits{
-				MaxOutputBytes:    10 * 1024 * 1024, // 10MB
-				MaxFiles:          1000,
-				MaxDepth:          20,
-				MaxNesting:        5,
+				MaxOutputBytes:    2 * config.MB,
+				MaxFiles:          400,
+				MaxDepth:          10,
+				MaxNesting:        3,
 				MaxExpansionRatio: 100,
 			},
 			DestDir:     filepath.Join(tmpDir, "extracted"),

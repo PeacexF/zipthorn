@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/PeacexF/zipthorn/internal/config"
 )
@@ -34,8 +35,53 @@ func usageFunc(fs *flag.FlagSet, w io.Writer, use, summary string) func() {
 	}
 }
 
+// permute moves operands after the flags so options can follow the archive
+// path. Go's flag package stops at the first non-flag argument, which would
+// silently ignore "zipthorn test archive.zip --max-bytes 64MB".
+func permute(fs *flag.FlagSet, args []string) []string {
+	flags := make([]string, 0, len(args))
+	operands := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		if arg == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if len(arg) < 2 || arg[0] != '-' {
+			operands = append(operands, arg)
+			continue
+		}
+
+		flags = append(flags, arg)
+
+		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if hasValue {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			continue // unknown flag: let Parse produce the error
+		}
+		if b, ok := f.Value.(boolFlag); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+
+	return append(flags, operands...)
+}
+
+// boolFlag matches the flag package's own unexported interface for options
+// that take no value.
+type boolFlag interface{ IsBoolFlag() bool }
+
 func parse(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(permute(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return coded(ExitOK, nil) // usage has already been printed
 		}

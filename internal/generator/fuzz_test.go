@@ -3,7 +3,20 @@ package generator
 import (
 	"bytes"
 	"testing"
+
+	"github.com/PeacexF/zipthorn/internal/config"
 )
+
+// fuzzLimits keep each iteration small. The defaults allow a 256MB declared
+// archive, which is far too heavy to build once per execution across parallel
+// fuzzing workers.
+var fuzzLimits = config.Limits{
+	MaxOutputBytes:    4 * config.MB,
+	MaxExpansionRatio: 100,
+	MaxFiles:          500,
+	MaxDepth:          12,
+	MaxNesting:        3,
+}
 
 // FuzzGenerator tests the generator with various seed values.
 // Run with: go test -fuzz=FuzzGenerator -fuzztime=30s
@@ -24,6 +37,7 @@ func FuzzGenerator(f *testing.F) {
 		spec := Spec{
 			Profile: ProfileFuzz,
 			Seed:    seed,
+			Limits:  fuzzLimits,
 		}
 
 		result, err := Generate(&buf, spec)
@@ -56,6 +70,22 @@ func FuzzGenerator(f *testing.F) {
 			t.Errorf("archive size mismatch: got %d bytes, result claims %d", buf.Len(), result.ArchiveSize)
 		}
 
-		// Verify no panics occurred (implicit - if we got here, no panic)
+		// Generation must respect the bounds it was given.
+		if result.DeclaredSize > fuzzLimits.MaxOutputBytes {
+			t.Errorf("declared %d bytes, above the %d-byte limit",
+				result.DeclaredSize, fuzzLimits.MaxOutputBytes)
+		}
+		if result.FileCount > fuzzLimits.MaxFiles {
+			t.Errorf("generated %d files, above the %d-file limit",
+				result.FileCount, fuzzLimits.MaxFiles)
+		}
+		if result.MaxDepth > fuzzLimits.MaxDepth {
+			t.Errorf("nested %d deep, above the depth limit of %d",
+				result.MaxDepth, fuzzLimits.MaxDepth)
+		}
+		if result.Nesting > fuzzLimits.MaxNesting {
+			t.Errorf("nested %d archives, above the limit of %d",
+				result.Nesting, fuzzLimits.MaxNesting)
+		}
 	})
 }

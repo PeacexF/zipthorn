@@ -92,7 +92,7 @@ func TestRunWithLimit(t *testing.T) {
 	}
 
 	destDir := filepath.Join(tmp, "extract")
-	
+
 	// Set a low limit to trigger LIMIT_REACHED
 	limits := config.Limits{
 		MaxOutputBytes:    1024 * 1024, // 1MB
@@ -119,10 +119,10 @@ func TestRunMultiple(t *testing.T) {
 
 	// Create a small test archive
 	spec := generator.Spec{
-		Profile:      generator.ProfileFileCount,
-		Seed:         42,
-		FileCount:    5,
-		FileSize:     1024,
+		Profile:   generator.ProfileFileCount,
+		Seed:      42,
+		FileCount: 5,
+		FileSize:  1024,
 	}
 
 	f, err := os.Create(archivePath)

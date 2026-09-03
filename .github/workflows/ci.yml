@@ -16,17 +16,19 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          # zipthorn has no dependencies, so there is no go.sum
+          cache: false
 
       - run: go build ./...
       - run: go vet ./...
@@ -35,13 +37,14 @@ jobs:
   tidy:
     name: format and modules
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       - name: gofmt
         run: |
@@ -55,31 +58,49 @@ jobs:
       - name: go mod tidy
         run: |
           go mod tidy
-          git diff --exit-code
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "go mod tidy changed the tree:"
+            git status --porcelain
+            git diff
+            exit 1
+          fi
 
   fuzz:
     name: fuzz (smoke)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       - run: go test -run=NONE -fuzz=FuzzGenerator -fuzztime=60s ./internal/generator/
       - run: go test -run=NONE -fuzz=FuzzExtractor -fuzztime=60s ./internal/extractor/
 
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashers
+          path: internal/*/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 7
+
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Pinned: @latest silently changes the tool under CI, so a new release
+      # can turn a green build red without anything in this repo changing.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...

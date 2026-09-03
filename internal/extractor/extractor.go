@@ -72,6 +72,7 @@ func Extract(ctx context.Context, archivePath string, opts Options) Result {
 		r.Elapsed = time.Since(start)
 		return r
 	}
+	defer zr.Close()
 
 	info, err := archive.Read(zr, archiveSize)
 	if err != nil {
@@ -131,7 +132,10 @@ func Extract(ctx context.Context, archivePath string, opts Options) Result {
 	return r
 }
 
-func openArchive(path string) (io.ReaderAt, int64, error) {
+// openArchive opens path for reading and reports its size. The caller owns the
+// returned file and must close it: Windows refuses to delete a file with a live
+// handle, so a leak here strands every archive the caller extracted.
+func openArchive(path string) (*os.File, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err

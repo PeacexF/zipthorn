@@ -523,6 +523,21 @@ destination, or `DiscardSink()` (Guard's default) to validate an archive
 without writing anything — the right choice when the only question is "is
 this safe", not "give me the files".
 
+Selecting a preset instead of tuning `Limits`/`Thresholds` by hand:
+
+```go
+opts, err := zipthorn.NamedGuardOptions(zipthorn.PolicyWeb) // or PolicyStrict, PolicyPermissive, PolicyCI
+if err != nil {
+	log.Fatal(err) // only for an unknown name
+}
+opts.Sink = zipthorn.DirSink("./out")
+```
+
+`NamedGuardOptions` pulls `Thresholds` and disabled rules from the same
+named `Policy` `Detect`/`GetPolicy` use; `Limits` always comes from
+`DefaultConfig()`, since a `Policy` never varies limits, only what counts as
+suspicious.
+
 `Inspect`, `Detect`, and `Extract` are exported too, for a caller that wants
 the pieces separately rather than the one-call form — most won't. All three
 take an `io.ReaderAt` directly (`InspectFile`/`ExtractFile` are the

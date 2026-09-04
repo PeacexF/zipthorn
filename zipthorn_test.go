@@ -392,3 +392,83 @@ func TestGuard_InvalidArchive(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidArchive", err)
 	}
 }
+
+// TestNamedGuardOptions_MatchesPolicy proves NamedGuardOptions is built from
+// the same named Policy GetPolicy returns, with Limits pinned to
+// DefaultConfig regardless of name — Policy itself never varies Limits, so
+// neither should its Guard-side counterpart.
+func TestNamedGuardOptions_MatchesPolicy(t *testing.T) {
+	for _, name := range zipthorn.Policies() {
+		p, err := zipthorn.GetPolicy(name)
+		if err != nil {
+			t.Fatalf("GetPolicy(%q): %v", name, err)
+		}
+		opts, err := zipthorn.NamedGuardOptions(name)
+		if err != nil {
+			t.Fatalf("NamedGuardOptions(%q): %v", name, err)
+		}
+		if opts.Thresholds != p.Thresholds {
+			t.Errorf("%s: Thresholds = %+v, want %+v", name, opts.Thresholds, p.Thresholds)
+		}
+		if len(opts.Disabled) != len(p.Disabled) {
+			t.Errorf("%s: Disabled = %v, want %v", name, opts.Disabled, p.Disabled)
+		}
+		for id, want := range p.Disabled {
+			if opts.Disabled[id] != want {
+				t.Errorf("%s: Disabled[%s] = %v, want %v", name, id, opts.Disabled[id], want)
+			}
+		}
+		if opts.Limits != zipthorn.DefaultConfig().Limits {
+			t.Errorf("%s: Limits = %+v, want DefaultConfig().Limits", name, opts.Limits)
+		}
+		if opts.Sink == nil {
+			t.Errorf("%s: Sink should default to DiscardSink(), got nil", name)
+		}
+	}
+}
+
+func TestNamedGuardOptions_UnknownPolicy(t *testing.T) {
+	if _, err := zipthorn.NamedGuardOptions("no-such-policy"); err == nil {
+		t.Error("an unknown policy must be an error")
+	}
+}
+
+// TestGuard_DisabledRuleIsSkipped proves GuardOptions.Disabled actually
+// reaches the detector: a fixture that trips HighCompressionRatio no longer
+// carries that indicator once it's disabled, the same way a Policy's
+// Disabled map already suppresses rules for Detect/DetectWithPolicy.
+func TestGuard_DisabledRuleIsSkipped(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileRatio, Seed: 7, Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	opts := zipthorn.DefaultGuardOptions()
+	res, err := zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	triggered := false
+	for _, in := range res.Assessment.Indicators {
+		if in.ID == zipthorn.HighCompressionRatio {
+			triggered = true
+		}
+	}
+	if !triggered {
+		t.Fatal("fixture should trip HighCompressionRatio with default options")
+	}
+
+	opts.Disabled = map[string]bool{zipthorn.HighCompressionRatio: true}
+	res, err = zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	for _, in := range res.Assessment.Indicators {
+		if in.ID == zipthorn.HighCompressionRatio {
+			t.Error("HighCompressionRatio should not appear once disabled")
+		}
+	}
+}

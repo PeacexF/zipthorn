@@ -112,11 +112,15 @@ func AssessWithPolicy(info *archive.Info, policyName string) (Assessment, error)
 	if err != nil {
 		return Assessment{}, err
 	}
-	return assessWithRules(info, p.Thresholds, p.Disabled), nil
+	return AssessWithRules(info, p.Thresholds, p.Disabled), nil
 }
 
-// assessWithRules is like Assess but allows disabling specific rules.
-func assessWithRules(info *archive.Info, t config.Thresholds, disabled map[string]bool) Assessment {
+// AssessWithRules is like Assess but allows disabling specific rules by ID —
+// the same knob a Policy's Disabled map exposes, for a caller that wants it
+// without going through a named Policy (Guard's GuardOptions.Disabled uses
+// this directly, so it doesn't have to re-derive a Policy just to know which
+// rules to skip).
+func AssessWithRules(info *archive.Info, t config.Thresholds, disabled map[string]bool) Assessment {
 	f := Extract(info)
 	a := Assessment{
 		Path:       info.Path,

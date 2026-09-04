@@ -26,7 +26,10 @@
 // the limits before writing anything, then enforces them again as bytes
 // land. Guard's Sink decides where surviving entries go — DirSink(path) for
 // a real destination, or DiscardSink() (Guard's default) to validate an
-// archive without writing anything at all.
+// archive without writing anything at all. NamedGuardOptions("web") (or
+// "strict", "permissive", "ci") is DefaultGuardOptions with a preset
+// Thresholds/Disabled pair instead of DefaultConfig's, for a caller
+// selecting a profile rather than tuning numbers by hand.
 //
 // Inspect, Detect, and Extract are exported too, for a caller that wants the
 // pieces separately — most won't. All three take an io.ReaderAt directly
@@ -772,6 +775,13 @@ type GuardOptions struct {
 	Limits     Limits
 	Thresholds Thresholds
 
+	// Disabled names detection rule IDs (HighCompressionRatio,
+	// DuplicateEntries, ...) to skip, the same knob a Policy's Disabled map
+	// carries. A nil map disables nothing. NamedGuardOptions sets this from
+	// the named Policy's own Disabled map; most callers building
+	// GuardOptions by hand will leave it nil.
+	Disabled map[string]bool
+
 	// Sink is where surviving entries are written, exactly as in
 	// ExtractOptions. DiscardSink() — Guard's default via
 	// DefaultGuardOptions — validates the archive without writing anything;
@@ -790,6 +800,27 @@ type GuardOptions struct {
 func DefaultGuardOptions() GuardOptions {
 	cfg := DefaultConfig()
 	return GuardOptions{Limits: cfg.Limits, Thresholds: cfg.Thresholds, Sink: DiscardSink()}
+}
+
+// NamedGuardOptions returns GuardOptions preset for a named use case — the
+// same names GetPolicy uses (strict, permissive, web, ci; also default,
+// equivalent to DefaultGuardOptions). Thresholds and Disabled come from the
+// named Policy; Limits stays DefaultConfig's regardless of name, because
+// Policy itself only ever varies Thresholds and disabled rules, never
+// Limits — a Guard-side preset that started varying Limits too would be
+// inventing a second, inconsistent axis of "named policy". Sink defaults to
+// DiscardSink(), same as DefaultGuardOptions.
+func NamedGuardOptions(name string) (GuardOptions, error) {
+	p, err := GetPolicy(name)
+	if err != nil {
+		return GuardOptions{}, err
+	}
+	return GuardOptions{
+		Limits:     DefaultConfig().Limits,
+		Thresholds: p.Thresholds,
+		Disabled:   p.Disabled,
+		Sink:       DiscardSink(),
+	}, nil
 }
 
 func (o GuardOptions) toExtractOptions() ExtractOptions {
@@ -845,7 +876,7 @@ func Guard(ctx context.Context, r io.ReaderAt, size int64, opts GuardOptions) (G
 	}
 	info := archive.Summarize(zr, size)
 
-	a := detector.Assess(info, config.Thresholds(opts.Thresholds))
+	a := detector.AssessWithRules(info, config.Thresholds(opts.Thresholds), opts.Disabled)
 	res := GuardResult{Info: toInfo(info), Assessment: toAssessment(a)}
 
 	if a.Recommendation == detector.Reject {

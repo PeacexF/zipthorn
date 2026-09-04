@@ -527,6 +527,27 @@ take an `io.ReaderAt` directly (`InspectFile`/`ExtractFile` are the
 path-based convenience wrappers), so an upload held in memory or streamed
 from `multipart.File` never needs to be spilled to a temp file first.
 
+### Configuring limits and thresholds
+
+There is no file-loading config API in the library — that is a CLI feature
+(`~/.zipthorn/config.yaml`, `./.zipthorn.config.yaml`), and a library should
+not have behaviour that depends on `$HOME` or the working directory. Start
+from `DefaultConfig()` and override what you need, directly in code:
+
+```go
+cfg := zipthorn.DefaultConfig()
+cfg.Limits.MaxFiles = 500
+cfg.Thresholds.ExpansionRatio = 20
+
+opts := zipthorn.DefaultGuardOptions()
+opts.Limits = cfg.Limits
+opts.Thresholds = cfg.Thresholds
+```
+
+A service that wants operators to edit a file can read and parse it however
+suits its own config system, then set `Limits`/`Thresholds` fields the same
+way — the library never needs to know a file was involved.
+
 ### Generating test fixtures
 
 The same generator the CLI's `create` command uses is importable as

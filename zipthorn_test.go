@@ -262,22 +262,18 @@ func TestDetectWithPolicy(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("limits:\n  max_files: 250\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// TestConfigFromCode proves Config is configurable by direct field
+// assignment over the defaults — no file path involved.
+func TestConfigFromCode(t *testing.T) {
+	cfg := zipthorn.DefaultConfig()
+	cfg.Limits.MaxFiles = 250
 
-	cfg, err := zipthorn.LoadConfigFile(path)
-	if err != nil {
-		t.Fatalf("LoadConfigFile: %v", err)
-	}
 	if cfg.Limits.MaxFiles != 250 {
 		t.Errorf("max_files = %d, want 250", cfg.Limits.MaxFiles)
 	}
-	// Unmentioned keys keep their defaults.
+	// Unmentioned fields keep their defaults.
 	if cfg.Limits.MaxDepth != zipthorn.DefaultConfig().Limits.MaxDepth {
-		t.Error("an unmentioned key should keep its default")
+		t.Error("an unmodified field should keep its default")
 	}
 }
 

@@ -99,19 +99,20 @@ const (
 
 // DefaultConfig returns the built-in limits and thresholds. It is the only
 // place defaults are defined.
-func DefaultConfig() Config { return toConfig(config.Default()) }
-
-// LoadConfigFile reads exactly one config file over the defaults. The file
-// must exist; a malformed file or an unknown key is an error.
 //
-// This package never reads $HOME or the working directory on its own — a
-// library should not have behaviour that depends on which user is running
-// the process. The CLI's file-discovery (global then local config, "closest
-// wins") is a CLI feature, not a library one.
-func LoadConfigFile(path string) (Config, error) {
-	c, err := config.LoadFrom(path)
-	return toConfig(c), err
-}
+// This package has no file-loading config API. Configure it directly in
+// code — start from DefaultConfig and override what you need:
+//
+//	cfg := zipthorn.DefaultConfig()
+//	cfg.Limits.MaxFiles = 500
+//	cfg.Thresholds.ExpansionRatio = 20
+//
+// YAML file discovery (global then local, "closest wins") is a CLI feature,
+// not a library one: it depends on $HOME and the working directory, which is
+// invisible at the call site and unreproducible in tests. A library that
+// wants file-based config should read and parse the file itself and build a
+// Config from the result.
+func DefaultConfig() Config { return toConfig(config.Default()) }
 
 // ---------------------------------------------------------------------------
 // Inspection

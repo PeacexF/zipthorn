@@ -147,8 +147,8 @@ func TestDetectJSON(t *testing.T) {
 	if got.Path != p || got.Recommendation != "REJECT" || got.Level != "HIGH" {
 		t.Errorf("assessment = %+v", got)
 	}
-	if len(got.Categories) != 4 {
-		t.Errorf("categories = %+v, want 4", got.Categories)
+	if len(got.Categories) != 5 {
+		t.Errorf("categories = %+v, want 5", got.Categories)
 	}
 	if len(got.Indicators) == 0 {
 		t.Fatal("no indicators reported")

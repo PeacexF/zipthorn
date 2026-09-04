@@ -281,6 +281,28 @@ func TestDuplicateEntries(t *testing.T) {
 	}
 }
 
+func TestEncryptedEntryIsFlagged(t *testing.T) {
+	a := detector.Assess(info(func(i *archive.Info) {
+		i.Encrypted = true
+	}), thresholds())
+
+	in := find(t, a, detector.EncryptedEntries)
+	if in.Level != detector.LevelMedium {
+		t.Errorf("level = %s, want MEDIUM", in.Level)
+	}
+	if got := category(t, a, detector.CategoryEncryption); got != detector.LevelMedium {
+		t.Errorf("category = %s, want MEDIUM", got)
+	}
+	if a.Recommendation != detector.Review {
+		t.Errorf("Recommendation = %s, want REVIEW", a.Recommendation)
+	}
+}
+
+func TestUnencryptedArchiveDoesNotTriggerEncryptedEntries(t *testing.T) {
+	a := detector.Assess(info(nil), thresholds())
+	refute(t, a, detector.EncryptedEntries)
+}
+
 func TestScoreAccumulatesAndCaps(t *testing.T) {
 	mild := detector.Assess(info(func(i *archive.Info) {
 		i.Duplicates = []archive.Duplicate{{Name: "dup.txt", Count: 2}}
@@ -413,7 +435,7 @@ func TestCategoriesAlwaysPresent(t *testing.T) {
 
 	want := []string{
 		detector.CategoryCompression, detector.CategoryFileCount,
-		detector.CategoryNesting, detector.CategoryPaths,
+		detector.CategoryNesting, detector.CategoryPaths, detector.CategoryEncryption,
 	}
 	if len(a.Categories) != len(want) {
 		t.Fatalf("Categories = %+v", a.Categories)

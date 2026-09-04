@@ -262,6 +262,7 @@ The detector evaluates characteristics such as:
 * Path traversal
 * Duplicate entries
 * Suspicious metadata
+* Encrypted entries
 
 Example:
 
@@ -281,6 +282,7 @@ Risk
   File count:       LOW
   Nesting:          LOW
   Paths:            LOW
+  Encryption:       LOW
 
 Indicators
   HIGH   HIGH_COMPRESSION_RATIO   archive expands 67.3x against a 50x threshold

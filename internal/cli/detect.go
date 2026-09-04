@@ -16,6 +16,7 @@ var categoryLabels = map[string]string{
 	detector.CategoryFileCount:   "File count",
 	detector.CategoryNesting:     "Nesting",
 	detector.CategoryPaths:       "Paths",
+	detector.CategoryEncryption:  "Encryption",
 }
 
 func runDetect(args []string, stdout, stderr io.Writer) error {

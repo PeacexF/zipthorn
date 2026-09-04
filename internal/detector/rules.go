@@ -40,6 +40,7 @@ var rules = []rule{
 	{PathTraversal, CategoryPaths, 30, traversalRule},
 	{SuspiciousPath, CategoryPaths, 8, suspiciousPathRule},
 	{DuplicateEntries, CategoryPaths, 8, duplicateRule},
+	{EncryptedEntries, CategoryEncryption, 15, encryptedRule},
 }
 
 // levelFor grades a measurement against the threshold at which it becomes
@@ -169,6 +170,23 @@ func duplicateRule(f Features, _ config.Thresholds) finding {
 			"name is claimed by more than one entry",
 			"names are claimed by more than one entry"),
 		evidence: f.DuplicateSample,
+	}
+}
+
+// The archive's own metadata is trustworthy here — Encrypted comes from the
+// general-purpose bit flag in the central directory, not from attempting to
+// decrypt anything, so this rule is as safe on hostile input as every other
+// one in this file. There is no natural threshold for a boolean, so this
+// rule ignores config.Thresholds the same way traversalRule and
+// duplicateRule do.
+func encryptedRule(f Features, _ config.Thresholds) finding {
+	if !f.Encrypted {
+		return finding{}
+	}
+	return finding{
+		level:  LevelMedium,
+		value:  1,
+		detail: "archive contains at least one encrypted entry; content cannot be inspected",
 	}
 }
 

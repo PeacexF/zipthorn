@@ -49,9 +49,10 @@ const (
 	CategoryFileCount   = "file_count"
 	CategoryNesting     = "nesting"
 	CategoryPaths       = "paths"
+	CategoryEncryption  = "encryption"
 )
 
-var categoryOrder = []string{CategoryCompression, CategoryFileCount, CategoryNesting, CategoryPaths}
+var categoryOrder = []string{CategoryCompression, CategoryFileCount, CategoryNesting, CategoryPaths, CategoryEncryption}
 
 // Indicator IDs
 const (
@@ -63,6 +64,7 @@ const (
 	PathTraversal         = "PATH_TRAVERSAL"
 	SuspiciousPath        = "SUSPICIOUS_PATH"
 	DuplicateEntries      = "DUPLICATE_ENTRIES"
+	EncryptedEntries      = "ENCRYPTED_ENTRIES"
 )
 
 const (

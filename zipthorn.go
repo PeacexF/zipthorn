@@ -357,6 +357,7 @@ const (
 	PathTraversal         = detector.PathTraversal
 	SuspiciousPath        = detector.SuspiciousPath
 	DuplicateEntries      = detector.DuplicateEntries
+	EncryptedEntries      = detector.EncryptedEntries
 )
 
 // Named detection policies.

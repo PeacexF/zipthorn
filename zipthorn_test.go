@@ -280,3 +280,119 @@ func TestLoadConfigFile(t *testing.T) {
 		t.Error("an unmentioned key should keep its default")
 	}
 }
+
+// TestGuard_AcceptAndExtracts proves the accept path: an archive within
+// every threshold gets extracted, and Guard's Info/Extract results agree
+// with what Inspect/Extract would have reported separately.
+func TestGuard_AcceptAndExtracts(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileFileCount, Seed: 11, FileCount: 5, FileSize: 64,
+		Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	dest := filepath.Join(t.TempDir(), "out")
+	opts := zipthorn.DefaultGuardOptions()
+	opts.Sink = zipthorn.DirSink(dest)
+
+	res, err := zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	if !res.OK() {
+		t.Fatalf("OK() = false, want true (reason: %s)", res.Reason())
+	}
+	if res.Extract.FilesProcessed != 5 {
+		t.Errorf("files processed = %d, want 5", res.Extract.FilesProcessed)
+	}
+	if res.Info.FileCount != 5 {
+		t.Errorf("Info.FileCount = %d, want 5", res.Info.FileCount)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("DirSink should have written to dest: %v", err)
+	}
+}
+
+// TestGuard_RejectsWithoutExtracting proves Guard never touches the sink
+// once the detector rejects the archive — the same fixture TestEmbeddedWorkflow
+// uses to trigger REJECT, here checked against the combined API.
+func TestGuard_RejectsWithoutExtracting(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileRatio, Seed: 7, Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	dest := filepath.Join(t.TempDir(), "out")
+	opts := zipthorn.DefaultGuardOptions()
+	opts.Sink = zipthorn.DirSink(dest)
+
+	res, err := zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("OK() = true, want false: this fixture should be rejected")
+	}
+	if res.Assessment.Recommendation != zipthorn.Reject {
+		t.Fatalf("Recommendation = %s, want %s", res.Assessment.Recommendation, zipthorn.Reject)
+	}
+	if res.Extract.Status != "" {
+		t.Errorf("Extract.Status = %q, want the zero value: extraction must not run after a REJECT", res.Extract.Status)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Error("Guard must not touch the sink when the detector rejects the archive")
+	}
+	if res.Reason() == "" {
+		t.Error("Reason() should explain the rejection")
+	}
+}
+
+// TestGuard_ExtractionLimitStillApplies proves detector approval doesn't
+// bypass the extractor's own limits: a fixture that passes detection can
+// still fail extraction under a tighter Limits than Thresholds implies.
+func TestGuard_ExtractionLimitStillApplies(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileFileCount, Seed: 3, FileCount: 20, FileSize: 128,
+		Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	opts := zipthorn.DefaultGuardOptions()
+	opts.Limits.MaxFiles = 5 // well under the fixture's 20, and far under the 10000 detection threshold
+
+	res, err := zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	if res.Assessment.Recommendation == zipthorn.Reject {
+		t.Fatal("fixture should pass detection so extraction actually runs")
+	}
+	if res.OK() {
+		t.Fatal("OK() = true, want false: the file limit should have tripped during extraction")
+	}
+	if res.Extract.Status != zipthorn.StatusLimitReached {
+		t.Errorf("Extract.Status = %s, want %s", res.Extract.Status, zipthorn.StatusLimitReached)
+	}
+	if res.Reason() != res.Extract.Reason {
+		t.Errorf("Reason() = %q, want the extractor's own reason %q", res.Reason(), res.Extract.Reason)
+	}
+}
+
+// TestGuard_InvalidArchive proves unparseable input is an error return, not
+// a rejected GuardResult — matching Inspect's own contract.
+func TestGuard_InvalidArchive(t *testing.T) {
+	data := []byte("not a zip at all")
+	_, err := zipthorn.Guard(context.Background(), bytes.NewReader(data), int64(len(data)), zipthorn.DefaultGuardOptions())
+	if !errors.Is(err, zipthorn.ErrInvalidArchive) {
+		t.Errorf("err = %v, want ErrInvalidArchive", err)
+	}
+}

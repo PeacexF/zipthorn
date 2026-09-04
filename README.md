@@ -472,7 +472,8 @@ detection, extraction, and generation are importable:
 go get github.com/PeacexF/zipthorn
 ```
 
-A gate for an upload path — inspect, assess, and only then extract:
+A gate for an upload path — inspect, assess, and extract under policy, in one
+call and one pass over the archive:
 
 ```go
 package main
@@ -481,42 +482,75 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/PeacexF/zipthorn"
 )
 
 func main() {
-	cfg := zipthorn.DefaultConfig()
+	opts := zipthorn.DefaultGuardOptions()
+	opts.Sink = zipthorn.DirSink("./out")
 
-	info, err := zipthorn.InspectFile("upload.zip")
+	f, err := os.Open("upload.zip")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	res, err := zipthorn.Guard(context.Background(), f, st.Size(), opts)
 	if err != nil {
 		log.Fatal(err) // unparseable is a rejection, not a retry
 	}
-
-	if a := zipthorn.Detect(info, cfg.Thresholds); a.Recommendation == zipthorn.Reject {
-		for _, ind := range a.Indicators {
-			fmt.Printf("%s: %s\n", ind.ID, ind.Detail)
-		}
+	if !res.OK() {
+		fmt.Println("rejected:", res.Reason())
 		return
 	}
-
-	res := zipthorn.ExtractFile(context.Background(), "upload.zip", zipthorn.ExtractOptions{
-		Limits:      cfg.Limits,
-		Sink:        zipthorn.DirSink("./out"),
-		CleanOnFail: true,
-	})
-	fmt.Println(res.Status, res.BytesProduced)
+	fmt.Println(res.Extract.Status, res.Extract.BytesProduced)
 }
 ```
 
-Detection never extracts, so it is safe to run on untrusted input. `ExtractFile`
-reports refusal in `res.Status` rather than as an error, mirroring the CLI.
+Guard reads the central directory exactly once, whether or not it goes on to
+extract — detection never extracts on its own, so it's safe to run on
+untrusted input regardless, but Guard also never re-parses to do both. Its
+`Sink` decides where extraction lands: `DirSink(path)` for a real
+destination, or `DiscardSink()` (Guard's default) to validate an archive
+without writing anything — the right choice when the only question is "is
+this safe", not "give me the files".
 
-`Inspect` and `Extract` also take an `io.ReaderAt` directly — for an upload
-held in memory, streamed from `multipart.File`, or read from an object store,
-there is no need to spill it to a temp file first. `DiscardSink()` extracts
-under the same limits without writing any output, which is the right choice
-when the only question is "is this safe", not "give me the files".
+`Inspect`, `Detect`, and `Extract` are exported too, for a caller that wants
+the pieces separately rather than the one-call form — most won't. All three
+take an `io.ReaderAt` directly (`InspectFile`/`ExtractFile` are the
+path-based convenience wrappers), so an upload held in memory or streamed
+from `multipart.File` never needs to be spilled to a temp file first.
+
+### Generating test fixtures
+
+The same generator the CLI's `create` command uses is importable as
+`zipthorntest`, shaped for a test file rather than a CLI flag set:
+
+```go
+import (
+	"testing"
+
+	"github.com/PeacexF/zipthorn"
+	"github.com/PeacexF/zipthorn/zipthorntest"
+)
+
+func TestUploadHandlerRejectsZipBombs(t *testing.T) {
+	data := zipthorntest.Bomb(t, zipthorn.ProfileRatio)
+	// ... feed data into the handler under test, assert it gets rejected
+}
+```
+
+`Bomb` and `BombFile` call `t.Helper()` and fail the test on any error, so a
+call reads as setup rather than something needing its own error handling.
+Functional options (`zipthorntest.Seed`, `FileCount`, `Depth`, `Nesting`, ...)
+cover the same knobs `zipthorn.Spec` exposes without assembling the struct by
+hand.
 
 Named policies, bounded fixture generation, and benchmarking are all reachable
 too — see the [package documentation](https://pkg.go.dev/github.com/PeacexF/zipthorn)

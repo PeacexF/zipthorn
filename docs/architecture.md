@@ -9,6 +9,7 @@ extractor never invents a limit.
 
 ```text
 zipthorn.go              public API — the embeddable surface
+zipthorntest/            t.Helper()-shaped fixture generation for other test suites
 cmd/zipthorn/main.go     entry point; wires version info and exits
 internal/
   cli/                   argument parsing, output rendering, exit codes

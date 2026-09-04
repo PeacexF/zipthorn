@@ -6,26 +6,33 @@
 // The command-line tool is a thin shell over exactly these calls, so anything
 // the CLI reports is reachable from Go.
 //
-// A typical gate in an upload path inspects, assesses, and only then extracts:
+// A gate for an upload path — inspect, assess, and extract under policy, all
+// in one call and one pass over the archive:
 //
-//	info, err := zipthorn.InspectFile("upload.zip")
+//	opts := zipthorn.DefaultGuardOptions()
+//	opts.Sink = zipthorn.DirSink(dest)
+//
+//	res, err := zipthorn.Guard(ctx, file, size, opts)
 //	if err != nil {
 //		return err // unparseable is a rejection, not a retry
 //	}
-//	if a := zipthorn.Detect(info, zipthorn.DefaultConfig().Thresholds); a.Recommendation == zipthorn.Reject {
-//		return fmt.Errorf("rejected: %v", a.Indicators)
+//	if !res.OK() {
+//		return fmt.Errorf("rejected: %s", res.Reason())
 //	}
-//	res := zipthorn.ExtractFile(ctx, "upload.zip", zipthorn.ExtractOptions{
-//		Limits:      zipthorn.DefaultConfig().Limits,
-//		Sink:        zipthorn.DirSink(dest),
-//		CleanOnFail: true,
-//	})
 //
-// Detection never extracts, so it is safe to run on untrusted input. Extraction
-// validates the whole central directory against the limits before writing
-// anything, then enforces them again as bytes land. Extract and Inspect also
-// take an io.ReaderAt directly, for a caller holding an upload in memory or
-// behind a non-file abstraction rather than a path on local disk.
+// Guard reads the central directory exactly once, whether or not it goes on
+// to extract. Detection never extracts on its own, so it is safe to run on
+// untrusted input; extraction validates the whole central directory against
+// the limits before writing anything, then enforces them again as bytes
+// land. Guard's Sink decides where surviving entries go — DirSink(path) for
+// a real destination, or DiscardSink() (Guard's default) to validate an
+// archive without writing anything at all.
+//
+// Inspect, Detect, and Extract are exported too, for a caller that wants the
+// pieces separately — most won't. All three take an io.ReaderAt directly
+// (InspectFile and ExtractFile are the path-based convenience wrappers), for
+// a caller holding an upload in memory or behind a non-file abstraction
+// rather than a path on local disk.
 //
 // Every exported type here is a real struct or interface owned by this
 // package, converted at the boundary from the internal packages that do the
@@ -34,6 +41,7 @@
 package zipthorn
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -750,4 +758,98 @@ func Profiles() []string { return generator.Profiles() }
 func Generate(w io.Writer, s Spec) (*GenerateResult, error) {
 	r, err := generator.Generate(w, s.toInternal())
 	return toGenerateResult(r), err
+}
+
+// ---------------------------------------------------------------------------
+// Guard: the one-call answer
+// ---------------------------------------------------------------------------
+
+// GuardOptions configures Guard: what to allow (Limits), what to call
+// suspicious (Thresholds), and where surviving entries go (Sink).
+type GuardOptions struct {
+	Limits     Limits
+	Thresholds Thresholds
+
+	// Sink is where surviving entries are written, exactly as in
+	// ExtractOptions. DiscardSink() — Guard's default via
+	// DefaultGuardOptions — validates the archive without writing anything;
+	// set it to DirSink(path) to actually extract.
+	Sink Sink
+
+	// CleanOnFail and OnEntry behave exactly as the same-named
+	// ExtractOptions fields.
+	CleanOnFail bool
+	OnEntry     func(name string, err error)
+}
+
+// DefaultGuardOptions returns GuardOptions built from DefaultConfig, with
+// Sink defaulting to DiscardSink() — the safe default for a function whose
+// job is deciding whether to trust an archive, not where to put it.
+func DefaultGuardOptions() GuardOptions {
+	cfg := DefaultConfig()
+	return GuardOptions{Limits: cfg.Limits, Thresholds: cfg.Thresholds, Sink: DiscardSink()}
+}
+
+func (o GuardOptions) toExtractOptions() ExtractOptions {
+	return ExtractOptions{Limits: o.Limits, Sink: o.Sink, CleanOnFail: o.CleanOnFail, OnEntry: o.OnEntry}
+}
+
+// GuardResult is the combined outcome of Guard: what the archive looked
+// like, what the detector made of it, and — unless the detector rejected it
+// first — what extraction did.
+type GuardResult struct {
+	Info       *Info
+	Assessment Assessment
+
+	// Extract is the zero ExtractResult (Status == "") when Assessment
+	// rejected the archive before extraction ever ran.
+	Extract ExtractResult
+}
+
+// OK reports the combined verdict: the detector did not reject the archive,
+// and extraction (if it ran) reported StatusPass. A caller that only wants
+// pass/fail needs nothing else from GuardResult.
+func (g GuardResult) OK() bool { return g.Extract.Status == StatusPass }
+
+// Reason explains a non-OK result in one line: the detector's leading
+// indicator if it rejected the archive before extraction ran, or the
+// extractor's own reason otherwise. It is empty when OK is true.
+func (g GuardResult) Reason() string {
+	if g.OK() {
+		return ""
+	}
+	if g.Assessment.Recommendation == Reject {
+		if len(g.Assessment.Indicators) > 0 {
+			return fmt.Sprintf("%s: %s", g.Assessment.Recommendation, g.Assessment.Indicators[0].Detail)
+		}
+		return g.Assessment.Recommendation
+	}
+	return g.Extract.Reason
+}
+
+// Guard inspects, assesses, and — unless the detector rejects it — extracts
+// an archive from r in one pass, reading the central directory exactly once
+// rather than paying for it twice the way calling Inspect and then Extract
+// would.
+//
+// Guard reports refusal in the returned result rather than as an error: a
+// rejected or unsafe archive is a verdict, not a malfunction. The error
+// return is reserved for input that could not even be parsed as a ZIP
+// archive.
+func Guard(ctx context.Context, r io.ReaderAt, size int64, opts GuardOptions) (GuardResult, error) {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return GuardResult{}, fmt.Errorf("%w: %v", archive.ErrInvalidArchive, err)
+	}
+	info := archive.Summarize(zr, size)
+
+	a := detector.Assess(info, config.Thresholds(opts.Thresholds))
+	res := GuardResult{Info: toInfo(info), Assessment: toAssessment(a)}
+
+	if a.Recommendation == detector.Reject {
+		return res, nil
+	}
+
+	res.Extract = toExtractResult(extractor.ExtractParsed(ctx, size, info, zr, opts.toExtractOptions().toInternal()))
+	return res, nil
 }

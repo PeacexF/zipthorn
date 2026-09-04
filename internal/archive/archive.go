@@ -156,10 +156,15 @@ func Read(r io.ReaderAt, size int64) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArchive, err)
 	}
-	return summarize(zr, size), nil
+	return Summarize(zr, size), nil
 }
 
-func summarize(zr *zip.Reader, size int64) *Info {
+// Summarize builds an Info from an already-parsed zip.Reader. Read is
+// Summarize(zip.NewReader(r, size), size) for the common case of a reader
+// that hasn't been parsed yet; a caller that needs the *zip.Reader itself
+// afterwards (extraction reusing the same parse rather than paying for it
+// twice) calls Summarize directly.
+func Summarize(zr *zip.Reader, size int64) *Info {
 	info := &Info{
 		ArchiveSize: size,
 		Comment:     zr.Comment,

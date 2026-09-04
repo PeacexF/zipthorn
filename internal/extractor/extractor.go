@@ -141,25 +141,38 @@ type Options struct {
 // to get the underlying sentinel for errors.Is.
 func Extract(ctx context.Context, r io.ReaderAt, size int64, opts Options) Result {
 	start := time.Now()
+
+	if opts.Sink == nil {
+		res := Result{Status: StatusError, Error: "extractor: Options.Sink is required"}
+		res.Elapsed = time.Since(start)
+		return res
+	}
+
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		res := Result{Status: StatusInvalid, err: fmt.Errorf("%w: %v", archive.ErrInvalidArchive, err)}
+		res.Reason = res.err.Error()
+		res.Elapsed = time.Since(start)
+		return res
+	}
+	info := archive.Summarize(zr, size)
+
+	res := ExtractParsed(ctx, size, info, zr, opts)
+	res.Elapsed = time.Since(start) // supersede ExtractParsed's own timing: include the parse above
+	return res
+}
+
+// ExtractParsed is Extract for a caller that has already parsed the archive
+// (Guard is the one today) and does not want to pay for a second central-
+// directory parse. info and zr must describe the same archive of size bytes.
+// Most callers want Extract or ExtractFile instead.
+func ExtractParsed(ctx context.Context, size int64, info *archive.Info, zr *zip.Reader, opts Options) Result {
+	start := time.Now()
 	res := Result{Status: StatusPass}
 
 	if opts.Sink == nil {
 		res.Status = StatusError
 		res.Error = "extractor: Options.Sink is required"
-		res.Elapsed = time.Since(start)
-		return res
-	}
-
-	info, err := archive.Read(r, size)
-	if err != nil {
-		res.err = err
-		if errors.Is(err, archive.ErrInvalidArchive) {
-			res.Status = StatusInvalid
-			res.Reason = err.Error()
-		} else {
-			res.Status = StatusError
-			res.Error = err.Error()
-		}
 		res.Elapsed = time.Since(start)
 		return res
 	}
@@ -173,16 +186,7 @@ func Extract(ctx context.Context, r io.ReaderAt, size int64, opts Options) Resul
 		return res
 	}
 
-	zipReader, err := zip.NewReader(r, size)
-	if err != nil {
-		res.Status = StatusInvalid
-		res.Reason = err.Error()
-		res.err = err
-		res.Elapsed = time.Since(start)
-		return res
-	}
-
-	err = extract(ctx, zipReader, opts, &res)
+	err := extract(ctx, zr, opts, &res)
 	res.Elapsed = time.Since(start)
 
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PeacexF/zipthorn/internal/archive"
 	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/extractor"
 	"github.com/PeacexF/zipthorn/internal/generator"
@@ -652,5 +653,51 @@ func TestExtract_DiscardSink(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("DiscardSink wrote something to disk: %v", names)
+	}
+}
+
+// TestExtractParsed_MatchesExtract proves ExtractParsed — the entry point
+// Guard uses to avoid a second central-directory parse — produces the same
+// outcome as Extract given the same archive and options, just fed an
+// already-parsed *archive.Info and *zip.Reader instead of parsing them
+// itself.
+func TestExtractParsed_MatchesExtract(t *testing.T) {
+	spec := generator.Spec{
+		Profile:      generator.ProfileFileCount,
+		DeclaredSize: 4096,
+		FileCount:    10,
+		FileSize:     64,
+		Seed:         42,
+		Limits:       config.Default().Limits,
+	}
+
+	var buf bytes.Buffer
+	if _, err := generator.Generate(&buf, spec); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	info := archive.Summarize(zr, int64(len(data)))
+
+	opts := extractor.Options{
+		Limits: config.Default().Limits,
+		Sink:   extractor.DiscardSink(),
+	}
+
+	viaParsed := extractor.ExtractParsed(context.Background(), int64(len(data)), info, zr, opts)
+	viaExtract := extractor.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), opts)
+
+	if viaParsed.Status != viaExtract.Status {
+		t.Errorf("Status: ExtractParsed = %s, Extract = %s", viaParsed.Status, viaExtract.Status)
+	}
+	if viaParsed.FilesProcessed != viaExtract.FilesProcessed {
+		t.Errorf("FilesProcessed: ExtractParsed = %d, Extract = %d", viaParsed.FilesProcessed, viaExtract.FilesProcessed)
+	}
+	if viaParsed.BytesProduced != viaExtract.BytesProduced {
+		t.Errorf("BytesProduced: ExtractParsed = %d, Extract = %d", viaParsed.BytesProduced, viaExtract.BytesProduced)
 	}
 }

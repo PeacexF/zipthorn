@@ -209,6 +209,7 @@ const (
 var (
 	ErrUnsafePath    = extractor.ErrUnsafePath
 	ErrByteLimitHit  = extractor.ErrByteLimitHit
+	ErrRatioLimitHit = extractor.ErrRatioLimitHit
 	ErrFileLimitHit  = extractor.ErrFileLimitHit
 	ErrDepthLimitHit = extractor.ErrDepthLimitHit
 	ErrNestingHit    = extractor.ErrNestingHit

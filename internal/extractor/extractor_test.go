@@ -1,9 +1,12 @@
 package extractor_test
 
 import (
+	"archive/zip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,5 +311,252 @@ func TestExtract_CleanupPreserved(t *testing.T) {
 
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
 		t.Errorf("dest dir should exist when CleanOnFail=false, got: %v", err)
+	}
+}
+
+// TestExtract_DepthLimit_ArchiveRelative regresses a bug where depth was
+// measured against filepath.Clean(DestDir/entry) instead of the entry name
+// alone, so extracting a shallow archive into a deep destination tripped the
+// depth limit for reasons that had nothing to do with the archive's shape.
+func TestExtract_DepthLimit_ArchiveRelative(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "test.zip")
+	// Several extra levels below tmp so the destination's own path length
+	// cannot be mistaken for a shallow one.
+	dest := filepath.Join(tmp, "a", "b", "c", "d", "e", "f", "g", "h", "out")
+
+	spec := generator.Spec{
+		Profile:      generator.ProfileDepth,
+		DeclaredSize: 2048,
+		FileCount:    1,
+		Depth:        2, // archive-relative depth: d01/d02/leaf.txt
+		Seed:         42,
+		Limits:       config.Default().Limits,
+	}
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = generator.Generate(f, spec)
+	f.Close()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	destDepth := strings.Count(filepath.Clean(dest), string(filepath.Separator))
+	if destDepth <= 6 {
+		t.Fatalf("test destination not deep enough to prove the regression: depth %d", destDepth)
+	}
+
+	opts := extractor.Options{
+		Limits: config.Limits{
+			MaxOutputBytes:    1024 * 1024,
+			MaxExpansionRatio: 1000,
+			MaxFiles:          10,
+			MaxDepth:          6, // archive-relative depth (2) fits; DestDir's own depth does not
+			MaxNesting:        4,
+		},
+		DestDir:     dest,
+		CleanOnFail: true,
+	}
+
+	r := extractor.Extract(context.Background(), archive, opts)
+
+	if r.Status != extractor.StatusPass {
+		t.Errorf("status = %s, want PASS (depth must be archive-relative, not measured against DestDir); reason: %s", r.Status, r.Reason)
+	}
+}
+
+// TestExtract_RatioLimit regresses MaxExpansionRatio being honoured by the
+// generator and registered as a CLI flag but never actually checked by the
+// extractor.
+func TestExtract_RatioLimit(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "test.zip")
+	dest := filepath.Join(tmp, "out")
+
+	spec := generator.Spec{
+		Profile:      generator.ProfileRatio,
+		DeclaredSize: 2 * 1024 * 1024,
+		FileCount:    1,
+		Ratio:        100,
+		Seed:         42,
+		Limits: config.Limits{
+			MaxOutputBytes:    64 * 1024 * 1024,
+			MaxExpansionRatio: 1000, // generous at generation time
+			MaxFiles:          10,
+			MaxDepth:          32,
+			MaxNesting:        4,
+		},
+	}
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = generator.Generate(f, spec)
+	f.Close()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	opts := extractor.Options{
+		Limits: config.Limits{
+			MaxOutputBytes:    64 * 1024 * 1024, // generous: byte cap must not be what trips this
+			MaxExpansionRatio: 20,               // tight: well below the ~100x the archive achieves
+			MaxFiles:          10,
+			MaxDepth:          32,
+			MaxNesting:        4,
+		},
+		DestDir:     dest,
+		CleanOnFail: true,
+	}
+
+	r := extractor.Extract(context.Background(), archive, opts)
+
+	if r.Status != extractor.StatusLimitReached {
+		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
+	}
+	if r.LimitReached != "ratio" {
+		t.Errorf("limit reached = %s, want ratio", r.LimitReached)
+	}
+	if !errors.Is(r.Err(), extractor.ErrRatioLimitHit) {
+		t.Errorf("Err() = %v, want it to wrap ErrRatioLimitHit", r.Err())
+	}
+}
+
+// TestExtract_Err verifies Result.Err() wraps the same sentinel that a
+// caller matching on LimitReached strings would infer, so errors.Is works
+// on the returned value.
+func TestExtract_Err(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "test.zip")
+	dest := filepath.Join(tmp, "out")
+
+	spec := generator.Spec{
+		Profile:      generator.ProfileRatio,
+		DeclaredSize: 10 * 1024 * 1024,
+		FileCount:    5,
+		Seed:         42,
+		Limits:       config.Default().Limits,
+	}
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = generator.Generate(f, spec)
+	f.Close()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	opts := extractor.Options{
+		Limits: config.Limits{
+			MaxOutputBytes:    8192, // below declared size: trips at pre-check
+			MaxExpansionRatio: 1000,
+			MaxFiles:          1000,
+			MaxDepth:          32,
+			MaxNesting:        4,
+		},
+		DestDir:     dest,
+		CleanOnFail: true,
+	}
+
+	r := extractor.Extract(context.Background(), archive, opts)
+
+	if r.Status != extractor.StatusPass && r.Err() == nil {
+		t.Fatalf("Err() = nil for non-PASS status %s", r.Status)
+	}
+	if !errors.Is(r.Err(), extractor.ErrByteLimitHit) {
+		t.Errorf("Err() = %v, want it to wrap ErrByteLimitHit", r.Err())
+	}
+}
+
+// TestExtract_OnEntry verifies the observability hook fires for every entry
+// pre-extraction validation refuses, even though the archive is refused as a
+// whole after the first one found.
+func TestExtract_OnEntry(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.zip")
+	dest := filepath.Join(tmp, "out")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range []string{"ok.txt", "../escape.txt", "also/../../escape2.txt"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create entry %s: %v", name, err)
+		}
+		w.Write([]byte("x"))
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	f.Close()
+
+	var rejected []string
+	opts := extractor.Options{
+		Limits:      config.Default().Limits,
+		DestDir:     dest,
+		CleanOnFail: true,
+		OnEntry: func(name string, err error) {
+			if err != nil {
+				rejected = append(rejected, name)
+			}
+		},
+	}
+
+	r := extractor.Extract(context.Background(), path, opts)
+
+	if r.Status != extractor.StatusLimitReached {
+		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
+	}
+	if len(rejected) != 2 {
+		t.Errorf("OnEntry reported %d rejected entries, want 2: %v", len(rejected), rejected)
+	}
+}
+
+// TestExtract_ControlCharacterRejected verifies an entry name containing a
+// control character is refused rather than silently extracted, on every
+// platform (unlike the reserved-device-name check, which only matters on
+// Windows).
+func TestExtract_ControlCharacterRejected(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.zip")
+	dest := filepath.Join(tmp, "out")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("bad\x01name.txt")
+	if err != nil {
+		t.Fatalf("create entry: %v", err)
+	}
+	w.Write([]byte("x"))
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	f.Close()
+
+	opts := extractor.Options{
+		Limits:      config.Default().Limits,
+		DestDir:     dest,
+		CleanOnFail: true,
+	}
+
+	r := extractor.Extract(context.Background(), path, opts)
+
+	if r.Status != extractor.StatusLimitReached {
+		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
+	}
+	if !errors.Is(r.Err(), extractor.ErrUnsafePath) {
+		t.Errorf("Err() = %v, want it to wrap ErrUnsafePath", r.Err())
 	}
 }

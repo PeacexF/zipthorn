@@ -71,7 +71,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 
 	opts := extractor.Options{
 		Limits:      limits,
-		DestDir:     destDir,
+		Sink:        extractor.DirSink(destDir),
 		CleanOnFail: !noClean,
 	}
 
@@ -82,7 +82,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 		defer cancel()
 	}
 
-	result := extractor.Extract(ctx, archivePath, opts)
+	result := extractor.ExtractFile(ctx, archivePath, opts)
 
 	out := newOutput(stdout, stderr, cf.json)
 	if err := out.Emit(withConfig(&result, res), func(w io.Writer) { writeTest(w, archivePath, &result, res, cf) }); err != nil {

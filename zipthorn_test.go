@@ -37,9 +37,9 @@ func fixture(t *testing.T, s zipthorn.Spec) string {
 func TestEmbeddedWorkflow(t *testing.T) {
 	path := fixture(t, zipthorn.Spec{Profile: zipthorn.ProfileRatio, Seed: 7})
 
-	info, err := zipthorn.Inspect(path)
+	info, err := zipthorn.InspectFile(path)
 	if err != nil {
-		t.Fatalf("Inspect: %v", err)
+		t.Fatalf("InspectFile: %v", err)
 	}
 	if info.DeclaredSize <= info.CompressedSize {
 		t.Errorf("ratio fixture should expand: declared %d, compressed %d",
@@ -64,9 +64,9 @@ func TestEmbeddedWorkflow(t *testing.T) {
 	limits := zipthorn.DefaultConfig().Limits
 	limits.MaxOutputBytes = 64 * zipthorn.KB
 
-	res := zipthorn.Extract(context.Background(), path, zipthorn.ExtractOptions{
+	res := zipthorn.ExtractFile(context.Background(), path, zipthorn.ExtractOptions{
 		Limits:      limits,
-		DestDir:     filepath.Join(t.TempDir(), "out"),
+		Sink:        zipthorn.DirSink(filepath.Join(t.TempDir(), "out")),
 		CleanOnFail: true,
 	})
 	if res.Status != zipthorn.StatusLimitReached {
@@ -80,9 +80,9 @@ func TestExtractPassesWithinLimits(t *testing.T) {
 	})
 
 	dest := filepath.Join(t.TempDir(), "out")
-	res := zipthorn.Extract(context.Background(), path, zipthorn.ExtractOptions{
+	res := zipthorn.ExtractFile(context.Background(), path, zipthorn.ExtractOptions{
 		Limits:      zipthorn.DefaultConfig().Limits,
-		DestDir:     dest,
+		Sink:        zipthorn.DirSink(dest),
 		CleanOnFail: true,
 	})
 	if res.Status != zipthorn.StatusPass {
@@ -94,6 +94,40 @@ func TestExtractPassesWithinLimits(t *testing.T) {
 	}
 }
 
+// TestReaderBasedAPI proves Inspect and Extract work directly off bytes in
+// memory, with DiscardSink validating the archive without writing anything —
+// the shape an upload handler needs without spilling untrusted input to disk
+// first.
+func TestReaderBasedAPI(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileFileCount, Seed: 9, FileCount: 5, FileSize: 64,
+		Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	info, err := zipthorn.Inspect(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if info.FileCount != 5 {
+		t.Errorf("FileCount = %d, want 5", info.FileCount)
+	}
+
+	res := zipthorn.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), zipthorn.ExtractOptions{
+		Limits: zipthorn.DefaultConfig().Limits,
+		Sink:   zipthorn.DiscardSink(),
+	})
+	if res.Status != zipthorn.StatusPass {
+		t.Fatalf("status = %s, want %s (reason: %s)", res.Status, zipthorn.StatusPass, res.Reason)
+	}
+	if res.BytesProduced == 0 {
+		t.Error("DiscardSink should still count decompressed bytes")
+	}
+}
+
 func TestExtractHonoursContextDeadline(t *testing.T) {
 	path := fixture(t, zipthorn.Spec{
 		Profile: zipthorn.ProfileFileCount, Seed: 1, FileCount: 5000, FileSize: 512,
@@ -102,9 +136,9 @@ func TestExtractHonoursContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done before extraction starts
 
-	res := zipthorn.Extract(ctx, path, zipthorn.ExtractOptions{
+	res := zipthorn.ExtractFile(ctx, path, zipthorn.ExtractOptions{
 		Limits:      zipthorn.DefaultConfig().Limits,
-		DestDir:     filepath.Join(t.TempDir(), "out"),
+		Sink:        zipthorn.DirSink(filepath.Join(t.TempDir(), "out")),
 		CleanOnFail: true,
 	})
 	if res.Status != zipthorn.StatusTimeout {
@@ -157,7 +191,7 @@ func TestInspectRejectsGarbage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := zipthorn.Inspect(path); !errors.Is(err, zipthorn.ErrInvalidArchive) {
+	if _, err := zipthorn.InspectFile(path); !errors.Is(err, zipthorn.ErrInvalidArchive) {
 		t.Errorf("err = %v, want ErrInvalidArchive", err)
 	}
 }
@@ -209,9 +243,9 @@ func TestDetectWithPolicy(t *testing.T) {
 		Profile: zipthorn.ProfileFileCount, Seed: 5, FileCount: 2000, FileSize: 64,
 	})
 
-	info, err := zipthorn.Inspect(path)
+	info, err := zipthorn.InspectFile(path)
 	if err != nil {
-		t.Fatalf("Inspect: %v", err)
+		t.Fatalf("InspectFile: %v", err)
 	}
 
 	// 2000 entries is under the default file-count threshold but over strict's.

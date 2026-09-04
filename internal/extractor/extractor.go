@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,9 +57,68 @@ type Result struct {
 // It is nil when Status is StatusPass.
 func (r Result) Err() error { return r.err }
 
+// Sink receives extracted file contents. The extractor enforces its byte and
+// ratio limits on the writer it gets back from File regardless of which Sink
+// implementation is in use.
+type Sink interface {
+	// File is called once per entry that survives validation, in the order
+	// entries appear in the archive. mode is the entry's declared file mode.
+	File(name string, mode fs.FileMode) (io.WriteCloser, error)
+}
+
+// Rollbacker is implemented by a Sink that can undo everything it has
+// written so far. Extract calls Rollback when opts.CleanOnFail is set and
+// extraction is aborted partway through. A Sink with nothing to roll back
+// (DiscardSink, or a custom Sink over a store with no delete) need not
+// implement it; CleanOnFail then simply has nothing to do.
+type Rollbacker interface {
+	Rollback() error
+}
+
+// DirSink writes each entry under dest on local disk, creating directories
+// as needed. This is the extractor's original behaviour, and the sink most
+// callers extracting to a real destination want.
+func DirSink(dest string) Sink { return &dirSink{dest: dest} }
+
+type dirSink struct{ dest string }
+
+func (s *dirSink) File(name string, mode fs.FileMode) (io.WriteCloser, error) {
+	dest := filepath.Join(s.dest, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+}
+
+func (s *dirSink) Rollback() error { return os.RemoveAll(s.dest) }
+
+// DiscardSink writes nothing anywhere: every entry is still decompressed and
+// counted against the limits, but no bytes land on any filesystem or store.
+// This is validate-only extraction — proof an archive is safe to extract,
+// without ever writing untrusted output.
+func DiscardSink() Sink { return discardSink{} }
+
+type discardSink struct{}
+
+func (discardSink) File(string, fs.FileMode) (io.WriteCloser, error) {
+	return nopWriteCloser{io.Discard}, nil
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
 type Options struct {
-	Limits      config.Limits
-	DestDir     string
+	Limits config.Limits
+
+	// Sink is where surviving entries are written. DirSink(path) recreates
+	// the extractor's original behaviour; DiscardSink() validates an archive
+	// against the limits without writing anything. Required.
+	Sink Sink
+
+	// CleanOnFail, if set, asks Sink to undo whatever it wrote when
+	// extraction is aborted partway through. It is a no-op for a Sink that
+	// does not implement Rollbacker.
 	CleanOnFail bool
 
 	// OnEntry, if set, is called once for every entry zipthorn refuses to
@@ -71,87 +131,112 @@ type Options struct {
 	OnEntry func(name string, err error)
 }
 
-// Extract performs bounded extraction of archivePath into opts.DestDir under the
-// constraints in opts.Limits. The context can carry a timeout; extraction stops
-// immediately when ctx is canceled.
-func Extract(ctx context.Context, archivePath string, opts Options) Result {
+// Extract performs bounded extraction from r, an archive of size bytes,
+// writing surviving entries to opts.Sink under the constraints in
+// opts.Limits. The context can carry a timeout; extraction stops immediately
+// when ctx is canceled.
+//
+// Extract reports failure in the returned Result's Status rather than as an
+// error: a refused archive is a verdict, not a malfunction. Use Result.Err
+// to get the underlying sentinel for errors.Is.
+func Extract(ctx context.Context, r io.ReaderAt, size int64, opts Options) Result {
 	start := time.Now()
-	r := Result{Status: StatusPass}
+	res := Result{Status: StatusPass}
 
-	zr, archiveSize, err := openArchive(archivePath)
-	if err != nil {
-		r.err = err
-		if errors.Is(err, archive.ErrInvalidArchive) {
-			r.Status = StatusInvalid
-			r.Reason = err.Error()
-		} else {
-			r.Status = StatusError
-			r.Error = err.Error()
-		}
-		r.Elapsed = time.Since(start)
-		return r
+	if opts.Sink == nil {
+		res.Status = StatusError
+		res.Error = "extractor: Options.Sink is required"
+		res.Elapsed = time.Since(start)
+		return res
 	}
-	defer zr.Close()
 
-	info, err := archive.Read(zr, archiveSize)
+	info, err := archive.Read(r, size)
 	if err != nil {
-		r.err = err
+		res.err = err
 		if errors.Is(err, archive.ErrInvalidArchive) {
-			r.Status = StatusInvalid
-			r.Reason = err.Error()
+			res.Status = StatusInvalid
+			res.Reason = err.Error()
 		} else {
-			r.Status = StatusError
-			r.Error = err.Error()
+			res.Status = StatusError
+			res.Error = err.Error()
 		}
-		r.Elapsed = time.Since(start)
-		return r
+		res.Elapsed = time.Since(start)
+		return res
 	}
 
 	if verr := validateBeforeExtract(info, opts); verr != nil {
-		r.Status = StatusLimitReached
-		r.LimitReached = limitName(verr)
-		r.Reason = verr.Error()
-		r.err = verr
-		r.Elapsed = time.Since(start)
-		return r
+		res.Status = StatusLimitReached
+		res.LimitReached = limitName(verr)
+		res.Reason = verr.Error()
+		res.err = verr
+		res.Elapsed = time.Since(start)
+		return res
 	}
 
-	zipReader, err := zip.NewReader(zr, archiveSize)
+	zipReader, err := zip.NewReader(r, size)
 	if err != nil {
-		r.Status = StatusInvalid
-		r.Reason = err.Error()
-		r.err = err
-		r.Elapsed = time.Since(start)
-		return r
+		res.Status = StatusInvalid
+		res.Reason = err.Error()
+		res.err = err
+		res.Elapsed = time.Since(start)
+		return res
 	}
 
-	err = extract(ctx, zipReader, opts, &r)
-	r.Elapsed = time.Since(start)
+	err = extract(ctx, zipReader, opts, &res)
+	res.Elapsed = time.Since(start)
 
 	if err != nil {
 		if opts.CleanOnFail {
-			_ = os.RemoveAll(opts.DestDir)
+			if rb, ok := opts.Sink.(Rollbacker); ok {
+				_ = rb.Rollback()
+			}
 		}
 
-		r.err = err
+		res.err = err
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			r.Status = StatusTimeout
-			r.LimitReached = "timeout"
-			r.Reason = "extraction timed out"
+			res.Status = StatusTimeout
+			res.LimitReached = "timeout"
+			res.Reason = "extraction timed out"
 		} else if isLimitError(err) {
-			r.Status = StatusLimitReached
-			r.LimitReached = limitName(err)
+			res.Status = StatusLimitReached
+			res.LimitReached = limitName(err)
+			res.Reason = err.Error()
+		} else {
+			res.Status = StatusError
+			res.Error = err.Error()
+		}
+	}
+
+	if res.BytesProduced > 0 && size > 0 {
+		res.Ratio = float64(res.BytesProduced) / float64(size)
+	}
+
+	return res
+}
+
+// ExtractFile is Extract over the archive at path: it opens path, reports
+// its size, and closes it when extraction finishes. Most callers with an
+// archive already on local disk want this.
+func ExtractFile(ctx context.Context, path string, opts Options) Result {
+	start := time.Now()
+
+	f, size, err := openArchive(path)
+	if err != nil {
+		r := Result{err: err}
+		if errors.Is(err, archive.ErrInvalidArchive) {
+			r.Status = StatusInvalid
 			r.Reason = err.Error()
 		} else {
 			r.Status = StatusError
 			r.Error = err.Error()
 		}
+		r.Elapsed = time.Since(start)
+		return r
 	}
+	defer f.Close()
 
-	if r.BytesProduced > 0 && archiveSize > 0 {
-		r.Ratio = float64(r.BytesProduced) / float64(archiveSize)
-	}
-
+	r := Extract(ctx, f, size, opts)
+	r.Elapsed = time.Since(start)
 	return r
 }
 
@@ -239,10 +324,6 @@ func unsafeEntryError(name string) error {
 }
 
 func extract(ctx context.Context, zr *zip.Reader, opts Options, r *Result) error {
-	if err := os.MkdirAll(opts.DestDir, 0755); err != nil {
-		return err
-	}
-
 	for _, f := range zr.File {
 		select {
 		case <-ctx.Done():
@@ -283,19 +364,12 @@ func extractFile(ctx context.Context, f *zip.File, opts Options, r *Result) (err
 	}
 
 	// Depth is measured on the archive-relative entry name, not the resolved
-	// destination path: DestDir's own depth must never count against a
+	// destination path: a sink's own path depth must never count against a
 	// caller's MaxDepth, or the same archive trips a different limit
 	// depending only on where it happens to be extracted.
 	depth := archive.Depth(f.Name)
 	if depth > opts.Limits.MaxDepth {
 		return fmt.Errorf("%w: depth %d for %s", ErrDepthLimitHit, depth, f.Name)
-	}
-
-	dest := filepath.Join(opts.DestDir, filepath.FromSlash(f.Name))
-	destDir := filepath.Dir(dest)
-
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return err
 	}
 
 	rc, err := f.Open()
@@ -304,7 +378,7 @@ func extractFile(ctx context.Context, f *zip.File, opts Options, r *Result) (err
 	}
 	defer rc.Close()
 
-	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	out, err := opts.Sink.File(f.Name, f.Mode())
 	if err != nil {
 		return err
 	}

@@ -488,7 +488,7 @@ import (
 func main() {
 	cfg := zipthorn.DefaultConfig()
 
-	info, err := zipthorn.Inspect("upload.zip")
+	info, err := zipthorn.InspectFile("upload.zip")
 	if err != nil {
 		log.Fatal(err) // unparseable is a rejection, not a retry
 	}
@@ -500,17 +500,23 @@ func main() {
 		return
 	}
 
-	res := zipthorn.Extract(context.Background(), "upload.zip", zipthorn.ExtractOptions{
+	res := zipthorn.ExtractFile(context.Background(), "upload.zip", zipthorn.ExtractOptions{
 		Limits:      cfg.Limits,
-		DestDir:     "./out",
+		Sink:        zipthorn.DirSink("./out"),
 		CleanOnFail: true,
 	})
 	fmt.Println(res.Status, res.BytesProduced)
 }
 ```
 
-Detection never extracts, so it is safe to run on untrusted input. `Extract`
+Detection never extracts, so it is safe to run on untrusted input. `ExtractFile`
 reports refusal in `res.Status` rather than as an error, mirroring the CLI.
+
+`Inspect` and `Extract` also take an `io.ReaderAt` directly — for an upload
+held in memory, streamed from `multipart.File`, or read from an object store,
+there is no need to spill it to a temp file first. `DiscardSink()` extracts
+under the same limits without writing any output, which is the right choice
+when the only question is "is this safe", not "give me the files".
 
 Named policies, bounded fixture generation, and benchmarking are all reachable
 too — see the [package documentation](https://pkg.go.dev/github.com/PeacexF/zipthorn)

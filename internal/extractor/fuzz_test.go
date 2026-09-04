@@ -59,13 +59,13 @@ func FuzzExtractor(f *testing.F) {
 				MaxNesting:        3,
 				MaxExpansionRatio: 100,
 			},
-			DestDir:     filepath.Join(tmpDir, "extracted"),
+			Sink:        DirSink(filepath.Join(tmpDir, "extracted")),
 			CleanOnFail: true,
 		}
 
 		ctx := context.Background()
 
-		result := Extract(ctx, archivePath, opts)
+		result := ExtractFile(ctx, archivePath, opts)
 
 		// We don't care if extraction fails - we just care that it doesn't crash
 		// and that limits are respected

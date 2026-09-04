@@ -2,6 +2,7 @@ package extractor_test
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -40,12 +41,12 @@ func TestExtract_Pass(t *testing.T) {
 
 	opts := extractor.Options{
 		Limits:      config.Default().Limits,
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusPass {
 		t.Errorf("status = %s, want PASS; reason: %s", r.Status, r.Reason)
@@ -89,12 +90,12 @@ func TestExtract_ByteLimit(t *testing.T) {
 			MaxDepth:          32,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Errorf("status = %s, want LIMIT_REACHED", r.Status)
@@ -138,12 +139,12 @@ func TestExtract_FileLimit(t *testing.T) {
 			MaxDepth:          32,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Errorf("status = %s, want LIMIT_REACHED", r.Status)
@@ -178,7 +179,7 @@ func TestExtract_Timeout(t *testing.T) {
 
 	opts := extractor.Options{
 		Limits:      config.Default().Limits,
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
@@ -187,7 +188,7 @@ func TestExtract_Timeout(t *testing.T) {
 
 	time.Sleep(2 * time.Millisecond)
 
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusTimeout {
 		t.Errorf("status = %s, want TIMEOUT", r.Status)
@@ -208,12 +209,12 @@ func TestExtract_InvalidArchive(t *testing.T) {
 
 	opts := extractor.Options{
 		Limits:      config.Default().Limits,
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusInvalid {
 		t.Errorf("status = %s, want INVALID_ARCHIVE", r.Status)
@@ -252,12 +253,12 @@ func TestExtract_DepthLimit(t *testing.T) {
 			MaxDepth:          10,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Errorf("status = %s, want LIMIT_REACHED", r.Status)
@@ -298,12 +299,12 @@ func TestExtract_CleanupPreserved(t *testing.T) {
 			MaxDepth:          32,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: false,
 	}
 
 	ctx := context.Background()
-	r := extractor.Extract(ctx, archive, opts)
+	r := extractor.ExtractFile(ctx, archive, opts)
 
 	if r.Status != extractor.StatusPass && r.Status != extractor.StatusLimitReached {
 		t.Logf("status = %s (unexpected but not critical for this test)", r.Status)
@@ -357,11 +358,11 @@ func TestExtract_DepthLimit_ArchiveRelative(t *testing.T) {
 			MaxDepth:          6, // archive-relative depth (2) fits; DestDir's own depth does not
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
-	r := extractor.Extract(context.Background(), archive, opts)
+	r := extractor.ExtractFile(context.Background(), archive, opts)
 
 	if r.Status != extractor.StatusPass {
 		t.Errorf("status = %s, want PASS (depth must be archive-relative, not measured against DestDir); reason: %s", r.Status, r.Reason)
@@ -409,11 +410,11 @@ func TestExtract_RatioLimit(t *testing.T) {
 			MaxDepth:          32,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
-	r := extractor.Extract(context.Background(), archive, opts)
+	r := extractor.ExtractFile(context.Background(), archive, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
@@ -460,11 +461,11 @@ func TestExtract_Err(t *testing.T) {
 			MaxDepth:          32,
 			MaxNesting:        4,
 		},
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
-	r := extractor.Extract(context.Background(), archive, opts)
+	r := extractor.ExtractFile(context.Background(), archive, opts)
 
 	if r.Status != extractor.StatusPass && r.Err() == nil {
 		t.Fatalf("Err() = nil for non-PASS status %s", r.Status)
@@ -502,7 +503,7 @@ func TestExtract_OnEntry(t *testing.T) {
 	var rejected []string
 	opts := extractor.Options{
 		Limits:      config.Default().Limits,
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 		OnEntry: func(name string, err error) {
 			if err != nil {
@@ -511,7 +512,7 @@ func TestExtract_OnEntry(t *testing.T) {
 		},
 	}
 
-	r := extractor.Extract(context.Background(), path, opts)
+	r := extractor.ExtractFile(context.Background(), path, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
@@ -547,16 +548,109 @@ func TestExtract_ControlCharacterRejected(t *testing.T) {
 
 	opts := extractor.Options{
 		Limits:      config.Default().Limits,
-		DestDir:     dest,
+		Sink:        extractor.DirSink(dest),
 		CleanOnFail: true,
 	}
 
-	r := extractor.Extract(context.Background(), path, opts)
+	r := extractor.ExtractFile(context.Background(), path, opts)
 
 	if r.Status != extractor.StatusLimitReached {
 		t.Fatalf("status = %s, want LIMIT_REACHED; reason: %s", r.Status, r.Reason)
 	}
 	if !errors.Is(r.Err(), extractor.ErrUnsafePath) {
 		t.Errorf("Err() = %v, want it to wrap ErrUnsafePath", r.Err())
+	}
+}
+
+// TestExtract_ReaderBased proves Extract works directly off an in-memory
+// archive, with no file ever created on disk for the archive itself. This is
+// the shape an upload handler holding a multipart.File or bytes.Reader needs
+// and previously had to spill to a temp file to get.
+func TestExtract_ReaderBased(t *testing.T) {
+	spec := generator.Spec{
+		Profile:      generator.ProfileFileCount,
+		DeclaredSize: 4096,
+		FileCount:    10,
+		FileSize:     64,
+		Seed:         42,
+		Limits:       config.Default().Limits,
+	}
+
+	var buf bytes.Buffer
+	if _, err := generator.Generate(&buf, spec); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "out")
+	r := bytes.NewReader(buf.Bytes())
+
+	opts := extractor.Options{
+		Limits:      config.Default().Limits,
+		Sink:        extractor.DirSink(dest),
+		CleanOnFail: true,
+	}
+
+	result := extractor.Extract(context.Background(), r, int64(buf.Len()), opts)
+
+	if result.Status != extractor.StatusPass {
+		t.Fatalf("status = %s, want PASS; reason: %s", result.Status, result.Reason)
+	}
+	if result.FilesProcessed != 10 {
+		t.Errorf("files processed = %d, want 10", result.FilesProcessed)
+	}
+}
+
+// TestExtract_DiscardSink proves DiscardSink extracts (and enforces every
+// limit) without writing anything anywhere: the validate-only mode LIB.md
+// calls out as the most-wanted reason to have a Sink abstraction at all.
+func TestExtract_DiscardSink(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "test.zip")
+
+	spec := generator.Spec{
+		Profile:      generator.ProfileFileCount,
+		DeclaredSize: 4096,
+		FileCount:    10,
+		FileSize:     64,
+		Seed:         42,
+		Limits:       config.Default().Limits,
+	}
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = generator.Generate(f, spec)
+	f.Close()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	opts := extractor.Options{
+		Limits: config.Default().Limits,
+		Sink:   extractor.DiscardSink(),
+	}
+
+	result := extractor.ExtractFile(context.Background(), archive, opts)
+
+	if result.Status != extractor.StatusPass {
+		t.Fatalf("status = %s, want PASS; reason: %s", result.Status, result.Reason)
+	}
+	if result.BytesProduced == 0 {
+		t.Error("DiscardSink should still count bytes decompressed, just not write them")
+	}
+
+	// Nothing beyond the source archive itself should exist in tmp: a
+	// DiscardSink extraction must not create any output on disk.
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("read tmp: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "test.zip" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("DiscardSink wrote something to disk: %v", names)
 	}
 }

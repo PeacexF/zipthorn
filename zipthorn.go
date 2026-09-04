@@ -8,22 +8,24 @@
 //
 // A typical gate in an upload path inspects, assesses, and only then extracts:
 //
-//	info, err := zipthorn.Inspect("upload.zip")
+//	info, err := zipthorn.InspectFile("upload.zip")
 //	if err != nil {
 //		return err // unparseable is a rejection, not a retry
 //	}
 //	if a := zipthorn.Detect(info, zipthorn.DefaultConfig().Thresholds); a.Recommendation == zipthorn.Reject {
 //		return fmt.Errorf("rejected: %v", a.Indicators)
 //	}
-//	res := zipthorn.Extract(ctx, "upload.zip", zipthorn.ExtractOptions{
+//	res := zipthorn.ExtractFile(ctx, "upload.zip", zipthorn.ExtractOptions{
 //		Limits:      zipthorn.DefaultConfig().Limits,
-//		DestDir:     dest,
+//		Sink:        zipthorn.DirSink(dest),
 //		CleanOnFail: true,
 //	})
 //
 // Detection never extracts, so it is safe to run on untrusted input. Extraction
 // validates the whole central directory against the limits before writing
-// anything, then enforces them again as bytes land.
+// anything, then enforces them again as bytes land. Extract and Inspect also
+// take an io.ReaderAt directly, for a caller holding an upload in memory or
+// behind a non-file abstraction rather than a path on local disk.
 package zipthorn
 
 import (
@@ -93,12 +95,12 @@ type (
 // ErrInvalidArchive reports input that could not be parsed as a ZIP archive.
 var ErrInvalidArchive = archive.ErrInvalidArchive
 
-// Inspect reads an archive's central directory and reports its metadata. It
-// never extracts, so it is safe on untrusted input.
-func Inspect(path string) (*Info, error) { return archive.Open(path) }
+// Inspect reads an archive's central directory from r and reports its
+// metadata. It never extracts, so it is safe on untrusted input.
+func Inspect(r io.ReaderAt, size int64) (*Info, error) { return archive.Read(r, size) }
 
-// InspectReader is Inspect over an already-open reader of known size.
-func InspectReader(r io.ReaderAt, size int64) (*Info, error) { return archive.Read(r, size) }
+// InspectFile is Inspect over the archive at path.
+func InspectFile(path string) (*Info, error) { return archive.Open(path) }
 
 // PathIssues reports everything suspicious about an entry name.
 func PathIssues(name string) []PathIssue { return archive.PathIssues(name) }
@@ -194,7 +196,28 @@ type (
 
 	// Status is an extraction outcome.
 	Status = extractor.Status
+
+	// Sink receives extracted file contents. DirSink and DiscardSink are the
+	// two built-in implementations; a caller may implement Sink itself to
+	// extract into a virtual filesystem, an object store, or anywhere else
+	// that isn't a real directory.
+	Sink = extractor.Sink
+
+	// Rollbacker is implemented by a Sink that can undo everything it wrote,
+	// which Extract calls when ExtractOptions.CleanOnFail is set and
+	// extraction is aborted partway through.
+	Rollbacker = extractor.Rollbacker
 )
+
+// DirSink writes each entry under dest on local disk, creating directories
+// as needed.
+func DirSink(dest string) Sink { return extractor.DirSink(dest) }
+
+// DiscardSink writes nothing anywhere: every entry is still decompressed and
+// counted against the limits, but no bytes land on any filesystem or store.
+// This is validate-only extraction — proof an archive is safe to extract,
+// without ever writing untrusted output.
+func DiscardSink() Sink { return extractor.DiscardSink() }
 
 // Extraction statuses.
 const (
@@ -215,14 +238,20 @@ var (
 	ErrNestingHit    = extractor.ErrNestingHit
 )
 
-// Extract unpacks an archive under hard limits, validating the central
-// directory before writing anything and stopping the moment a limit is reached.
-// Cancel ctx (or give it a deadline) to bound the wall-clock cost.
+// Extract unpacks an archive from r under hard limits, validating the
+// central directory before writing anything and stopping the moment a limit
+// is reached. Cancel ctx (or give it a deadline) to bound the wall-clock
+// cost.
 //
 // Extract reports failure in the returned result's Status rather than as an
 // error: a refused archive is a verdict, not a malfunction.
-func Extract(ctx context.Context, archivePath string, opts ExtractOptions) ExtractResult {
-	return extractor.Extract(ctx, archivePath, opts)
+func Extract(ctx context.Context, r io.ReaderAt, size int64, opts ExtractOptions) ExtractResult {
+	return extractor.Extract(ctx, r, size, opts)
+}
+
+// ExtractFile is Extract over the archive at path.
+func ExtractFile(ctx context.Context, path string, opts ExtractOptions) ExtractResult {
+	return extractor.ExtractFile(ctx, path, opts)
 }
 
 // Generation.

@@ -98,10 +98,10 @@ func Run(ctx context.Context, archivePath string, limits config.Limits, destDir 
 
 	opts := extractor.Options{
 		Limits:      limits,
-		DestDir:     destDir,
+		Sink:        extractor.DirSink(destDir),
 		CleanOnFail: cleanOnFailure,
 	}
-	result := extractor.Extract(ctx, archivePath, opts)
+	result := extractor.Extract(ctx, f, archiveSize, opts)
 
 	elapsed := time.Since(start)
 	cpuElapsed := getCPUTime() - cpuStart

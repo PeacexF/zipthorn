@@ -1,7 +1,8 @@
 // Package zipthorn is the embeddable API for the zipthorn archive
 // security-testing toolkit: inspect a ZIP's metadata without extracting it,
-// assess its risk, extract it under hard resource limits, and generate bounded
-// pathological fixtures to test other extractors with.
+// assess its risk, extract it under hard resource limits, build one of your
+// own under the same bounds with Writer, and generate bounded pathological
+// fixtures to test other extractors with.
 //
 // The command-line tool is a thin shell over exactly these calls, so anything
 // the CLI reports is reachable from Go.
@@ -48,10 +49,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
@@ -753,6 +757,166 @@ func Extract(ctx context.Context, r io.ReaderAt, size int64, opts ExtractOptions
 // ExtractFile is Extract over the archive at path.
 func ExtractFile(ctx context.Context, path string, opts ExtractOptions) ExtractResult {
 	return toExtractResult(extractor.ExtractFile(ctx, path, opts.toInternal()))
+}
+
+// ---------------------------------------------------------------------------
+// Writer: bounded archive creation
+// ---------------------------------------------------------------------------
+
+// ErrWriterClosed is returned by Add or Close when called on a Writer that
+// has already been closed successfully. It is never wrapped around a limit
+// or safety failure — those return the same sentinels Extract uses
+// (ErrUnsafePath, ErrFileLimitHit, ErrDepthLimitHit, ErrByteLimitHit).
+var ErrWriterClosed = errors.New("zipthorn: writer is closed")
+
+// Writer builds a well-formed ZIP archive one entry at a time, enforcing
+// Limits as it goes rather than after the fact — the write fails the moment
+// it would exceed them. Generate deliberately builds archives that fail
+// zipthorn's own checks, for testing extractors with; Writer is the
+// opposite case — an export endpoint bundling a user's files, a build step
+// packaging an artifact, a service re-zipping entries Guard already
+// cleared — where the goal is a well-formed archive whose declared
+// metadata Inspect and Guard can trust on the way back in. Because Writer
+// only ever streams the exact bytes it's given through real compression,
+// the resulting archive's metadata is never dishonest the way a crafted one
+// could be; the only thing left to enforce is that it stays within bounds.
+//
+// A Writer that has returned an error from Add or Close is failed: nothing
+// written to the underlying io.Writer since is a valid archive (Close never
+// writes a central directory once failed), and that content should be
+// discarded rather than treated as a usable, if partial, ZIP.
+type Writer struct {
+	zw     *zip.Writer
+	limits Limits
+	stamp  time.Time
+	files  int64
+	total  int64
+	closed bool
+	err    error
+}
+
+// NewWriter returns a Writer that streams a ZIP archive to w, bounded by
+// limits. MaxFiles caps the number of file entries (directories don't
+// count, matching Info.FileCount); MaxOutputBytes caps the sum of their
+// uncompressed sizes; MaxDepth caps every entry's path depth, files and
+// directories alike. MaxExpansionRatio and MaxNesting have nothing to
+// enforce here — a Writer only ever writes the bytes it's given, at no
+// expansion, and creates no archives within the archive — so they're
+// ignored.
+func NewWriter(w io.Writer, limits Limits) *Writer {
+	return &Writer{zw: zip.NewWriter(w), limits: limits, stamp: time.Now()}
+}
+
+// Add writes one entry named name with the given mode, copying r until EOF.
+// r is ignored for a directory entry (mode.IsDir()); name gains a trailing
+// "/" if it doesn't already have one. It fails, and leaves the Writer
+// failed, if:
+//
+//   - a file entry's name would escape wherever the archive is later
+//     extracted, or contains a control character (ErrUnsafePath) — the
+//     same check, on the same file-entries-only basis, that Extract itself
+//     applies during pre-extraction validation, so nothing this Writer
+//     produces can smuggle a Zip Slip into whatever extracts it later
+//   - name's path depth exceeds limits.MaxDepth (ErrDepthLimitHit)
+//   - adding another file would exceed limits.MaxFiles (ErrFileLimitHit)
+//   - r's content would push the running uncompressed total past
+//     limits.MaxOutputBytes (ErrByteLimitHit) — checked incrementally as
+//     bytes are copied, not just from a size the caller claims up front,
+//     the same "fail before committing to bad state" contract Extract's
+//     own byte-limit enforcement has
+//
+// Once Add returns an error, that error is final: it and every subsequent
+// call to Add or Close return the same error without doing anything
+// further.
+func (w *Writer) Add(name string, mode fs.FileMode, r io.Reader) error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.closed {
+		return ErrWriterClosed
+	}
+
+	isDir := mode.IsDir()
+	if isDir && !strings.HasSuffix(name, "/") {
+		name += "/"
+	}
+
+	if d := archive.Depth(name); d > w.limits.MaxDepth {
+		w.err = fmt.Errorf("%w: %s is %d deep, exceeds max %d", ErrDepthLimitHit, name, d, w.limits.MaxDepth)
+		return w.err
+	}
+
+	if !isDir {
+		if archive.Escapes(name) {
+			w.err = fmt.Errorf("%w: %s", ErrUnsafePath, name)
+			return w.err
+		}
+		if slices.Contains(archive.PathIssues(name), archive.PathControl) {
+			w.err = fmt.Errorf("%w: control character in %s", ErrUnsafePath, name)
+			return w.err
+		}
+		if w.files >= w.limits.MaxFiles {
+			w.err = fmt.Errorf("%w: adding %s would exceed max %d files", ErrFileLimitHit, name, w.limits.MaxFiles)
+			return w.err
+		}
+	}
+
+	h := &zip.FileHeader{Name: name, Modified: w.stamp}
+	if isDir {
+		h.Method = zip.Store
+	} else {
+		h.Method = zip.Deflate
+	}
+	h.SetMode(mode)
+
+	fw, err := w.zw.CreateHeader(h)
+	if err != nil {
+		w.err = err
+		return w.err
+	}
+	if isDir {
+		return nil
+	}
+
+	remaining := max(w.limits.MaxOutputBytes-w.total, 0)
+	// Read one byte past the budget: if r has exactly remaining bytes left,
+	// CopyN reports n == remaining with an expected io.EOF; if r has more,
+	// n == remaining+1 with no error, which is what actually signals the
+	// overflow below. Either way, this never reads more than one byte
+	// beyond what the archive is allowed to hold.
+	n, err := io.CopyN(fw, r, remaining+1)
+	if err != nil && err != io.EOF {
+		w.err = err
+		return w.err
+	}
+	if n > remaining {
+		w.err = fmt.Errorf("%w: writing %s would exceed max %d bytes", ErrByteLimitHit, name, w.limits.MaxOutputBytes)
+		return w.err
+	}
+
+	w.total += n
+	w.files++
+	return nil
+}
+
+// Close finalizes the archive, writing its central directory. If Add ever
+// failed, Close returns that same error without writing a central
+// directory — the bytes already sent to the underlying io.Writer are not,
+// and will never become, a valid archive. Close is safe to call more than
+// once; calls after a successful Close return nil.
+func (w *Writer) Close() error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	if err := w.zw.Close(); err != nil {
+		w.err = err
+		return err
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

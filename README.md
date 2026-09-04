@@ -594,6 +594,50 @@ A service that wants operators to edit a file can read and parse it however
 suits its own config system, then set `Limits`/`Thresholds` fields the same
 way — the library never needs to know a file was involved.
 
+### Creating archives
+
+Everything above is about handling a ZIP someone else produced. `Writer` is
+the other direction: building one, entry by entry, bounded by the same
+`Limits` the rest of the library enforces — an export endpoint bundling a
+user's files, a build step packaging an artifact, a service re-zipping
+entries `Guard` already cleared.
+
+```go
+var buf bytes.Buffer
+w := zipthorn.NewWriter(&buf, zipthorn.DefaultConfig().Limits)
+
+if err := w.Add("report.pdf", 0o644, reportFile); err != nil {
+	return err
+}
+if err := w.Add("data/export.csv", 0o644, csvReader); err != nil {
+	return err
+}
+if err := w.Close(); err != nil {
+	return err
+}
+```
+
+`Add` fails the moment adding an entry would cross a limit — too many
+files, too deep a path, or content that would push the running
+uncompressed total past `MaxOutputBytes` — checked incrementally as bytes
+are copied, not from a size the caller claims up front. It also refuses an
+entry name that would escape wherever the archive is later extracted, so
+nothing built with `Writer` can carry a Zip Slip into whatever extracts it.
+Once `Add` or `Close` returns an error, the `Writer` is done: every later
+call returns that same error, and `Close` never writes a central
+directory, so the bytes already sent to the underlying `io.Writer` are not
+— and will never become — a valid archive. Every error wraps the same
+sentinels `Extract` uses (`ErrUnsafePath`, `ErrFileLimitHit`,
+`ErrDepthLimitHit`, `ErrByteLimitHit`), so one set of `errors.Is` checks
+covers both directions.
+
+Where `Generate` (below) deliberately produces archives that fail
+zipthorn's own checks, for testing extractors with, `Writer` is the
+opposite: because it only ever streams the exact bytes it's given, an
+archive it produces reports honest metadata by construction — feeding the
+result straight back into `Inspect` or `Guard` passes, assuming it stayed
+within `Limits` in the first place.
+
 ### Generating test fixtures
 
 The same generator the CLI's `create` command uses is importable as

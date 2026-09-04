@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -559,5 +561,165 @@ func TestMemSink_Rollback(t *testing.T) {
 	}
 	if _, ok := entries.Bytes("a.txt"); ok {
 		t.Error("Bytes should not find an entry discarded by Rollback")
+	}
+}
+
+// TestWriter_RoundTrip proves a Writer-built archive is well-formed and its
+// declared metadata is honest: Inspect and Extract on the result agree with
+// what was actually added, and MemSink recovers each file's exact content.
+func TestWriter_RoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	w := zipthorn.NewWriter(&buf, zipthorn.DefaultConfig().Limits)
+
+	if err := w.Add("dir/", fs.ModeDir|0o755, nil); err != nil {
+		t.Fatalf("Add(dir/): %v", err)
+	}
+	if err := w.Add("dir/a.txt", 0o644, bytes.NewReader([]byte("hello"))); err != nil {
+		t.Fatalf("Add(a.txt): %v", err)
+	}
+	if err := w.Add("dir/b.txt", 0o644, bytes.NewReader([]byte("world!"))); err != nil {
+		t.Fatalf("Add(b.txt): %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	data := buf.Bytes()
+	info, err := zipthorn.Inspect(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if info.FileCount != 2 {
+		t.Errorf("FileCount = %d, want 2 (directory should not count)", info.FileCount)
+	}
+	if info.DirCount != 1 {
+		t.Errorf("DirCount = %d, want 1", info.DirCount)
+	}
+	if info.DeclaredSize != int64(len("hello")+len("world!")) {
+		t.Errorf("DeclaredSize = %d, want %d", info.DeclaredSize, len("hello")+len("world!"))
+	}
+
+	sink, entries := zipthorn.MemSink()
+	res := zipthorn.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), zipthorn.ExtractOptions{
+		Limits: zipthorn.DefaultConfig().Limits,
+		Sink:   sink,
+	})
+	if res.Status != zipthorn.StatusPass {
+		t.Fatalf("status = %s, want %s (reason: %s)", res.Status, zipthorn.StatusPass, res.Reason)
+	}
+	if b, _ := entries.Bytes("dir/a.txt"); string(b) != "hello" {
+		t.Errorf("dir/a.txt = %q, want %q", b, "hello")
+	}
+	if b, _ := entries.Bytes("dir/b.txt"); string(b) != "world!" {
+		t.Errorf("dir/b.txt = %q, want %q", b, "world!")
+	}
+}
+
+func TestWriter_RejectsUnsafePath(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"traversal", "../evil.txt"},
+		{"control_character", "bad\x01name.txt"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			w := zipthorn.NewWriter(&buf, zipthorn.DefaultConfig().Limits)
+
+			err := w.Add(c.path, 0o644, bytes.NewReader([]byte("x")))
+			if !errors.Is(err, zipthorn.ErrUnsafePath) {
+				t.Fatalf("Add(%q) err = %v, want ErrUnsafePath", c.path, err)
+			}
+
+			// The Writer is failed: every later call returns the same error.
+			if err2 := w.Add("fine.txt", 0o644, bytes.NewReader([]byte("y"))); !errors.Is(err2, zipthorn.ErrUnsafePath) {
+				t.Errorf("Add after failure = %v, want the same ErrUnsafePath", err2)
+			}
+			if err3 := w.Close(); !errors.Is(err3, zipthorn.ErrUnsafePath) {
+				t.Errorf("Close after failure = %v, want the same ErrUnsafePath", err3)
+			}
+		})
+	}
+}
+
+func TestWriter_EnforcesMaxDepth(t *testing.T) {
+	limits := zipthorn.DefaultConfig().Limits
+	limits.MaxDepth = 2
+
+	var buf bytes.Buffer
+	w := zipthorn.NewWriter(&buf, limits)
+
+	if err := w.Add("a/b.txt", 0o644, bytes.NewReader([]byte("ok"))); err != nil {
+		t.Fatalf("Add(a/b.txt) within depth: %v", err)
+	}
+
+	var buf2 bytes.Buffer
+	w2 := zipthorn.NewWriter(&buf2, limits)
+	err := w2.Add("a/b/c/d.txt", 0o644, bytes.NewReader([]byte("too deep")))
+	if !errors.Is(err, zipthorn.ErrDepthLimitHit) {
+		t.Fatalf("Add(a/b/c/d.txt) err = %v, want ErrDepthLimitHit", err)
+	}
+}
+
+func TestWriter_EnforcesMaxFiles(t *testing.T) {
+	limits := zipthorn.DefaultConfig().Limits
+	limits.MaxFiles = 2
+
+	var buf bytes.Buffer
+	w := zipthorn.NewWriter(&buf, limits)
+
+	for i := range 2 {
+		if err := w.Add(fmt.Sprintf("f%d.txt", i), 0o644, bytes.NewReader([]byte("x"))); err != nil {
+			t.Fatalf("Add(f%d.txt): %v", i, err)
+		}
+	}
+	err := w.Add("f2.txt", 0o644, bytes.NewReader([]byte("x")))
+	if !errors.Is(err, zipthorn.ErrFileLimitHit) {
+		t.Fatalf("third Add err = %v, want ErrFileLimitHit", err)
+	}
+}
+
+func TestWriter_EnforcesMaxOutputBytes(t *testing.T) {
+	limits := zipthorn.DefaultConfig().Limits
+	limits.MaxOutputBytes = 5
+
+	// Exactly at the budget: allowed.
+	var buf bytes.Buffer
+	w := zipthorn.NewWriter(&buf, limits)
+	if err := w.Add("exact.txt", 0o644, bytes.NewReader([]byte("12345"))); err != nil {
+		t.Fatalf("Add exactly at budget: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// One byte over: rejected.
+	var buf2 bytes.Buffer
+	w2 := zipthorn.NewWriter(&buf2, limits)
+	err := w2.Add("over.txt", 0o644, bytes.NewReader([]byte("123456")))
+	if !errors.Is(err, zipthorn.ErrByteLimitHit) {
+		t.Fatalf("Add over budget err = %v, want ErrByteLimitHit", err)
+	}
+	if err := w2.Close(); !errors.Is(err, zipthorn.ErrByteLimitHit) {
+		t.Errorf("Close after byte-limit failure = %v, want the same ErrByteLimitHit", err)
+	}
+}
+
+func TestWriter_ClosedRejectsFurtherAdd(t *testing.T) {
+	var buf bytes.Buffer
+	w := zipthorn.NewWriter(&buf, zipthorn.DefaultConfig().Limits)
+	if err := w.Add("a.txt", 0o644, bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil", err)
+	}
+	if err := w.Add("b.txt", 0o644, bytes.NewReader([]byte("x"))); !errors.Is(err, zipthorn.ErrWriterClosed) {
+		t.Errorf("Add after Close = %v, want ErrWriterClosed", err)
 	}
 }

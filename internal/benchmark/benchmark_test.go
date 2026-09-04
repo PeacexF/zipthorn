@@ -117,12 +117,15 @@ func TestRunMultiple(t *testing.T) {
 	tmp := t.TempDir()
 	archivePath := filepath.Join(tmp, "test.zip")
 
-	// Create a small test archive
+	// Large enough that extraction reliably takes measurable wall time even
+	// on a coarse clock: a handful of tiny files could complete faster than
+	// some CI runners' timer resolution, reading back as exactly 0ns
+	// elapsed (observed on windows-latest) rather than a real duration.
 	spec := generator.Spec{
 		Profile:   generator.ProfileFileCount,
 		Seed:      42,
-		FileCount: 5,
-		FileSize:  1024,
+		FileCount: 200,
+		FileSize:  4096,
 	}
 
 	f, err := os.Create(archivePath)

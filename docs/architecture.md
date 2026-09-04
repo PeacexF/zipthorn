@@ -24,9 +24,11 @@ tests/
 ```
 
 Everything under `internal/` is free to change. `zipthorn.go` is the stable
-surface: it re-exports the internal types as aliases, so an embedding
-application gets the same types the CLI uses without depending on the internal
-layout.
+surface: every exported type there is a real struct or interface owned by the
+root package, converted at the boundary from whatever `internal/` type did the
+work — not a type alias. Renaming or restructuring an internal field never
+breaks a caller of the public API; only a deliberate change to `zipthorn.go`
+itself does.
 
 ## Data flow
 

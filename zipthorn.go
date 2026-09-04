@@ -26,33 +26,61 @@
 // anything, then enforces them again as bytes land. Extract and Inspect also
 // take an io.ReaderAt directly, for a caller holding an upload in memory or
 // behind a non-file abstraction rather than a path on local disk.
+//
+// Every exported type here is a real struct or interface owned by this
+// package, converted at the boundary from the internal packages that do the
+// work. Nothing here is a type alias into internal/: renaming or restructuring
+// an internal field never breaks a caller of this package.
 package zipthorn
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
+	"time"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
-	"github.com/PeacexF/zipthorn/internal/benchmark"
 	"github.com/PeacexF/zipthorn/internal/config"
 	"github.com/PeacexF/zipthorn/internal/detector"
 	"github.com/PeacexF/zipthorn/internal/extractor"
 	"github.com/PeacexF/zipthorn/internal/generator"
 )
 
-// Configuration.
-type (
-	// Config is the resource limits and detection thresholds that govern every
-	// operation. Policy lives here, never at a call site.
-	Config = config.Config
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
 
-	// Limits bound any operation that generates or extracts archive data.
-	Limits = config.Limits
+// Limits bound any operation that generates or extracts archive data.
+type Limits struct {
+	MaxOutputBytes    int64   `json:"max_output_bytes"`
+	MaxExpansionRatio float64 `json:"max_expansion_ratio"` // declared / compressed
+	MaxFiles          int64   `json:"max_files"`
+	MaxDepth          int     `json:"max_depth"`   // directory nesting
+	MaxNesting        int     `json:"max_nesting"` // archive-within-archive
+}
 
-	// Thresholds are the detection engine's decision boundaries: the point at
-	// or above which a characteristic is treated as HIGH risk.
-	Thresholds = config.Thresholds
-)
+// Thresholds are the detection engine's decision boundaries: the point at
+// or above which a characteristic is treated as HIGH risk.
+type Thresholds struct {
+	ExpansionRatio float64 `json:"expansion_ratio"`
+	DeclaredSize   int64   `json:"declared_size"`
+	FileCount      int64   `json:"file_count"`
+	Depth          int     `json:"depth"`
+	Nesting        int     `json:"nesting"`
+}
+
+// Config is the resource limits and detection thresholds that govern every
+// operation. Policy lives here, never at a call site.
+type Config struct {
+	Limits     Limits     `json:"limits"`
+	Thresholds Thresholds `json:"thresholds"`
+}
+
+func toConfig(c config.Config) Config {
+	return Config{Limits: Limits(c.Limits), Thresholds: Thresholds(c.Thresholds)}
+}
 
 // Byte-size constants, matching the binary units the config files accept.
 const (
@@ -63,47 +91,197 @@ const (
 
 // DefaultConfig returns the built-in limits and thresholds. It is the only
 // place defaults are defined.
-func DefaultConfig() Config { return config.Default() }
+func DefaultConfig() Config { return toConfig(config.Default()) }
 
-// LoadConfig reads ~/.zipthorn/config.yaml then ./.zipthorn.config.yaml over
-// the defaults, each layer overriding the last. A missing file is not an error;
-// a malformed file or an unknown key is.
-func LoadConfig() (Config, error) { return config.Load() }
+// LoadConfigFile reads exactly one config file over the defaults. The file
+// must exist; a malformed file or an unknown key is an error.
+//
+// This package never reads $HOME or the working directory on its own — a
+// library should not have behaviour that depends on which user is running
+// the process. The CLI's file-discovery (global then local config, "closest
+// wins") is a CLI feature, not a library one.
+func LoadConfigFile(path string) (Config, error) {
+	c, err := config.LoadFrom(path)
+	return toConfig(c), err
+}
 
-// LoadConfigFile reads exactly one config file over the defaults, skipping
-// discovery. The file must exist.
-func LoadConfigFile(path string) (Config, error) { return config.LoadFrom(path) }
+// ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
 
-// Inspection.
-type (
-	// Info is the whole-archive summary produced without extracting anything.
-	Info = archive.Info
+// PathIssue names one suspicious property of an entry name.
+type PathIssue string
 
-	// Entry is one central-directory record.
-	Entry = archive.Entry
-
-	// MethodCount summarizes how many entries use one compression method.
-	MethodCount = archive.MethodCount
-
-	// Duplicate is a name claimed by more than one entry.
-	Duplicate = archive.Duplicate
-
-	// PathIssue names one suspicious property of an entry name.
-	PathIssue = archive.PathIssue
+// The full set of issues PathIssues can report. Named Issue* rather than
+// Path* to avoid colliding with the PathTraversal and SuspiciousPath
+// indicator IDs below, which are a different namespace (rule IDs, not path
+// properties) that happens to share some words.
+const (
+	IssueEmpty      = PathIssue(archive.PathEmpty)
+	IssueNonUTF8    = PathIssue(archive.PathNonUTF8)
+	IssueControl    = PathIssue(archive.PathControl)
+	IssueAbsolute   = PathIssue(archive.PathAbsolute)
+	IssueTraversal  = PathIssue(archive.PathTraversal)
+	IssueBackslash  = PathIssue(archive.PathBackslash)
+	IssueDotSegment = PathIssue(archive.PathDotSegment)
+	IssueReserved   = PathIssue(archive.PathReserved)
+	IssueTrailing   = PathIssue(archive.PathTrailing)
 )
+
+func toPathIssues(in []archive.PathIssue) []PathIssue {
+	if in == nil {
+		return nil
+	}
+	out := make([]PathIssue, len(in))
+	for i, v := range in {
+		out[i] = PathIssue(v)
+	}
+	return out
+}
+
+// Entry is one central-directory record.
+type Entry struct {
+	Name             string    `json:"name"`
+	Method           uint16    `json:"method"`
+	MethodName       string    `json:"method_name"`
+	Level            string    `json:"level,omitempty"`
+	CompressedSize   int64     `json:"compressed_size"`
+	UncompressedSize int64     `json:"uncompressed_size"`
+	Depth            int       `json:"depth"`
+	IsDir            bool      `json:"is_dir"`
+	Encrypted        bool      `json:"encrypted"`
+	Modified         time.Time `json:"modified"`
+	CRC32            uint32    `json:"crc32"`
+	Comment          string    `json:"comment,omitempty"`
+}
+
+// MethodCount summarizes how many entries use one compression method.
+type MethodCount struct {
+	Method uint16 `json:"method"`
+	Name   string `json:"name"`
+	Count  int64  `json:"count"`
+}
+
+// Duplicate is a name claimed by more than one entry.
+type Duplicate struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// Info is the whole-archive summary produced without extracting anything.
+type Info struct {
+	Path           string        `json:"path,omitempty"`
+	ArchiveSize    int64         `json:"archive_size"`
+	CompressedSize int64         `json:"compressed_size"`
+	DeclaredSize   int64         `json:"declared_size"`
+	ExpansionRatio float64       `json:"expansion_ratio"`
+	FileCount      int64         `json:"file_count"`
+	DirCount       int64         `json:"dir_count"`
+	MaxDepth       int           `json:"max_depth"`
+	Methods        []MethodCount `json:"methods"`
+	Duplicates     []Duplicate   `json:"duplicates,omitempty"`
+	NestedArchives []string      `json:"nested_archives,omitempty"`
+	Encrypted      bool          `json:"encrypted"`
+	Comment        string        `json:"comment,omitempty"`
+	Entries        []Entry       `json:"entries,omitempty"`
+}
+
+func toInfo(i *archive.Info) *Info {
+	if i == nil {
+		return nil
+	}
+	out := &Info{
+		Path:           i.Path,
+		ArchiveSize:    i.ArchiveSize,
+		CompressedSize: i.CompressedSize,
+		DeclaredSize:   i.DeclaredSize,
+		ExpansionRatio: i.ExpansionRatio,
+		FileCount:      i.FileCount,
+		DirCount:       i.DirCount,
+		MaxDepth:       i.MaxDepth,
+		NestedArchives: i.NestedArchives,
+		Encrypted:      i.Encrypted,
+		Comment:        i.Comment,
+	}
+	if i.Methods != nil {
+		out.Methods = make([]MethodCount, len(i.Methods))
+		for idx, m := range i.Methods {
+			out.Methods[idx] = MethodCount(m)
+		}
+	}
+	if i.Duplicates != nil {
+		out.Duplicates = make([]Duplicate, len(i.Duplicates))
+		for idx, d := range i.Duplicates {
+			out.Duplicates[idx] = Duplicate(d)
+		}
+	}
+	if i.Entries != nil {
+		out.Entries = make([]Entry, len(i.Entries))
+		for idx, e := range i.Entries {
+			out.Entries[idx] = Entry(e)
+		}
+	}
+	return out
+}
+
+// toInternal converts back to the type the detection and extraction engines
+// operate on. A nil *Info converts to a nil *archive.Info.
+func (in *Info) toInternal() *archive.Info {
+	if in == nil {
+		return nil
+	}
+	out := &archive.Info{
+		Path:           in.Path,
+		ArchiveSize:    in.ArchiveSize,
+		CompressedSize: in.CompressedSize,
+		DeclaredSize:   in.DeclaredSize,
+		ExpansionRatio: in.ExpansionRatio,
+		FileCount:      in.FileCount,
+		DirCount:       in.DirCount,
+		MaxDepth:       in.MaxDepth,
+		NestedArchives: in.NestedArchives,
+		Encrypted:      in.Encrypted,
+		Comment:        in.Comment,
+	}
+	if in.Methods != nil {
+		out.Methods = make([]archive.MethodCount, len(in.Methods))
+		for idx, m := range in.Methods {
+			out.Methods[idx] = archive.MethodCount(m)
+		}
+	}
+	if in.Duplicates != nil {
+		out.Duplicates = make([]archive.Duplicate, len(in.Duplicates))
+		for idx, d := range in.Duplicates {
+			out.Duplicates[idx] = archive.Duplicate(d)
+		}
+	}
+	if in.Entries != nil {
+		out.Entries = make([]archive.Entry, len(in.Entries))
+		for idx, e := range in.Entries {
+			out.Entries[idx] = archive.Entry(e)
+		}
+	}
+	return out
+}
 
 // ErrInvalidArchive reports input that could not be parsed as a ZIP archive.
 var ErrInvalidArchive = archive.ErrInvalidArchive
 
 // Inspect reads an archive's central directory from r and reports its
 // metadata. It never extracts, so it is safe on untrusted input.
-func Inspect(r io.ReaderAt, size int64) (*Info, error) { return archive.Read(r, size) }
+func Inspect(r io.ReaderAt, size int64) (*Info, error) {
+	i, err := archive.Read(r, size)
+	return toInfo(i), err
+}
 
 // InspectFile is Inspect over the archive at path.
-func InspectFile(path string) (*Info, error) { return archive.Open(path) }
+func InspectFile(path string) (*Info, error) {
+	i, err := archive.Open(path)
+	return toInfo(i), err
+}
 
 // PathIssues reports everything suspicious about an entry name.
-func PathIssues(name string) []PathIssue { return archive.PathIssues(name) }
+func PathIssues(name string) []PathIssue { return toPathIssues(archive.PathIssues(name)) }
 
 // Escapes reports whether an entry name would write outside the destination
 // directory. It is the check an extractor must not skip.
@@ -112,36 +290,46 @@ func Escapes(name string) bool { return archive.Escapes(name) }
 // SupportedMethod reports whether zipthorn can decompress a ZIP method.
 func SupportedMethod(method uint16) bool { return archive.Supported(method) }
 
-// Detection.
-type (
-	// Assessment is the detector's verdict on an archive.
-	Assessment = detector.Assessment
+// ---------------------------------------------------------------------------
+// Detection
+// ---------------------------------------------------------------------------
 
-	// Indicator is one triggered rule.
-	Indicator = detector.Indicator
+// Level is a risk level: LevelLow, LevelMedium, or LevelHigh.
+type Level int
 
-	// Category is one facet of the archive's risk.
-	Category = detector.Category
-
-	// Features are the archive properties the rules operate on.
-	Features = detector.Features
-
-	// PathFinding is one entry name the path rules objected to.
-	PathFinding = detector.PathFinding
-
-	// Level is a risk level: LevelLow, LevelMedium, or LevelHigh.
-	Level = detector.Level
-
-	// Policy is a named detection profile: preset thresholds plus disabled rules.
-	Policy = detector.Policy
-)
-
-// Risk levels.
+// Risk levels, low to high.
 const (
-	LevelLow    = detector.LevelLow
-	LevelMedium = detector.LevelMedium
-	LevelHigh   = detector.LevelHigh
+	LevelLow Level = iota
+	LevelMedium
+	LevelHigh
 )
+
+var levelNames = map[Level]string{LevelLow: "LOW", LevelMedium: "MEDIUM", LevelHigh: "HIGH"}
+
+func (l Level) String() string {
+	if n, ok := levelNames[l]; ok {
+		return n
+	}
+	return fmt.Sprintf("LEVEL_%d", int(l))
+}
+
+// MarshalJSON renders a Level as its name ("LOW", "MEDIUM", "HIGH"), matching
+// what the CLI's --json output has always produced.
+func (l Level) MarshalJSON() ([]byte, error) { return json.Marshal(l.String()) }
+
+func (l *Level) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	for lvl, name := range levelNames {
+		if name == s {
+			*l = lvl
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown risk level %q", s)
+}
 
 // Recommendations.
 const (
@@ -171,61 +359,178 @@ const (
 	PolicyCI         = detector.PolicyCI
 )
 
+// PathFinding is one entry name the path rules objected to.
+type PathFinding struct {
+	Name    string      `json:"name"`
+	Issues  []PathIssue `json:"issues"`
+	Escapes bool        `json:"escapes"`
+}
+
+func toPathFinding(p detector.PathFinding) PathFinding {
+	return PathFinding{Name: p.Name, Issues: toPathIssues(p.Issues), Escapes: p.Escapes}
+}
+
+// Features are the archive properties the rules operate on.
+type Features struct {
+	ArchiveSize    int64   `json:"archive_size"`
+	CompressedSize int64   `json:"compressed_size"`
+	DeclaredSize   int64   `json:"declared_size"`
+	ExpansionRatio float64 `json:"expansion_ratio"`
+	FileCount      int64   `json:"file_count"`
+	DirCount       int64   `json:"dir_count"`
+	MaxDepth       int     `json:"max_depth"`
+	Encrypted      bool    `json:"encrypted"`
+
+	NestedArchives  int `json:"nested_archives"`
+	Duplicates      int `json:"duplicates"`
+	EscapingPaths   int `json:"escaping_paths"`
+	SuspiciousPaths int `json:"suspicious_paths"`
+
+	NestedSample    []string      `json:"nested_sample,omitempty"`
+	DuplicateSample []string      `json:"duplicate_sample,omitempty"`
+	PathSample      []PathFinding `json:"path_sample,omitempty"`
+}
+
+func toFeatures(f detector.Features) Features {
+	out := Features{
+		ArchiveSize:     f.ArchiveSize,
+		CompressedSize:  f.CompressedSize,
+		DeclaredSize:    f.DeclaredSize,
+		ExpansionRatio:  f.ExpansionRatio,
+		FileCount:       f.FileCount,
+		DirCount:        f.DirCount,
+		MaxDepth:        f.MaxDepth,
+		Encrypted:       f.Encrypted,
+		NestedArchives:  f.NestedArchives,
+		Duplicates:      f.Duplicates,
+		EscapingPaths:   f.EscapingPaths,
+		SuspiciousPaths: f.SuspiciousPaths,
+		NestedSample:    f.NestedSample,
+		DuplicateSample: f.DuplicateSample,
+	}
+	if f.PathSample != nil {
+		out.PathSample = make([]PathFinding, len(f.PathSample))
+		for i, p := range f.PathSample {
+			out.PathSample[i] = toPathFinding(p)
+		}
+	}
+	return out
+}
+
+// Indicator is one triggered rule.
+type Indicator struct {
+	ID        string   `json:"id"`
+	Category  string   `json:"category"`
+	Level     Level    `json:"level"`
+	Score     int      `json:"score"`
+	Detail    string   `json:"detail"`
+	Value     float64  `json:"value"`
+	Threshold float64  `json:"threshold,omitempty"`
+	Evidence  []string `json:"evidence,omitempty"`
+}
+
+func toIndicator(in detector.Indicator) Indicator {
+	return Indicator{
+		ID:        in.ID,
+		Category:  in.Category,
+		Level:     Level(in.Level),
+		Score:     in.Score,
+		Detail:    in.Detail,
+		Value:     in.Value,
+		Threshold: in.Threshold,
+		Evidence:  in.Evidence,
+	}
+}
+
+// Category is one facet of the archive's risk.
+type Category struct {
+	Name  string `json:"name"`
+	Level Level  `json:"level"`
+}
+
+// Assessment is the detector's verdict on an archive.
+type Assessment struct {
+	Path           string      `json:"path,omitempty"`
+	Level          Level       `json:"level"`
+	Score          int         `json:"score"`
+	Recommendation string      `json:"recommendation"`
+	Categories     []Category  `json:"categories"`
+	Indicators     []Indicator `json:"indicators"`
+	Features       Features    `json:"features"`
+	Thresholds     Thresholds  `json:"thresholds"`
+}
+
+func toAssessment(a detector.Assessment) Assessment {
+	out := Assessment{
+		Path:           a.Path,
+		Level:          Level(a.Level),
+		Score:          a.Score,
+		Recommendation: a.Recommendation,
+		Features:       toFeatures(a.Features),
+		Thresholds:     Thresholds(a.Thresholds),
+	}
+	if a.Categories != nil {
+		out.Categories = make([]Category, len(a.Categories))
+		for i, c := range a.Categories {
+			out.Categories[i] = Category{Name: c.Name, Level: Level(c.Level)}
+		}
+	}
+	if a.Indicators != nil {
+		out.Indicators = make([]Indicator, len(a.Indicators))
+		for i, ind := range a.Indicators {
+			out.Indicators[i] = toIndicator(ind)
+		}
+	}
+	return out
+}
+
+// Policy is a named detection profile: preset thresholds plus disabled rules.
+type Policy struct {
+	Name        string
+	Description string
+	Thresholds  Thresholds
+	Disabled    map[string]bool // rule IDs to disable
+}
+
+func toPolicy(p detector.Policy) Policy {
+	return Policy{Name: p.Name, Description: p.Description, Thresholds: Thresholds(p.Thresholds), Disabled: p.Disabled}
+}
+
 // Detect assesses an archive's risk from its metadata alone.
-func Detect(info *Info, t Thresholds) Assessment { return detector.Assess(info, t) }
+func Detect(info *Info, t Thresholds) Assessment {
+	return toAssessment(detector.Assess(info.toInternal(), config.Thresholds(t)))
+}
 
 // DetectWithPolicy assesses an archive using a named policy's thresholds and
 // rule set, which supersede any configured thresholds.
 func DetectWithPolicy(info *Info, policy string) (Assessment, error) {
-	return detector.AssessWithPolicy(info, policy)
+	a, err := detector.AssessWithPolicy(info.toInternal(), policy)
+	return toAssessment(a), err
 }
 
 // Policies lists the available named policies.
 func Policies() []string { return detector.ListPolicies() }
 
 // GetPolicy returns a named policy's thresholds and disabled rules.
-func GetPolicy(name string) (Policy, error) { return detector.GetPolicy(name) }
+func GetPolicy(name string) (Policy, error) {
+	p, err := detector.GetPolicy(name)
+	return toPolicy(p), err
+}
 
-// Extraction.
-type (
-	// ExtractOptions configures a bounded extraction.
-	ExtractOptions = extractor.Options
+// ---------------------------------------------------------------------------
+// Extraction
+// ---------------------------------------------------------------------------
 
-	// ExtractResult reports what a bounded extraction did and why it stopped.
-	ExtractResult = extractor.Result
-
-	// Status is an extraction outcome.
-	Status = extractor.Status
-
-	// Sink receives extracted file contents. DirSink and DiscardSink are the
-	// two built-in implementations; a caller may implement Sink itself to
-	// extract into a virtual filesystem, an object store, or anywhere else
-	// that isn't a real directory.
-	Sink = extractor.Sink
-
-	// Rollbacker is implemented by a Sink that can undo everything it wrote,
-	// which Extract calls when ExtractOptions.CleanOnFail is set and
-	// extraction is aborted partway through.
-	Rollbacker = extractor.Rollbacker
-)
-
-// DirSink writes each entry under dest on local disk, creating directories
-// as needed.
-func DirSink(dest string) Sink { return extractor.DirSink(dest) }
-
-// DiscardSink writes nothing anywhere: every entry is still decompressed and
-// counted against the limits, but no bytes land on any filesystem or store.
-// This is validate-only extraction — proof an archive is safe to extract,
-// without ever writing untrusted output.
-func DiscardSink() Sink { return extractor.DiscardSink() }
+// Status is an extraction outcome.
+type Status string
 
 // Extraction statuses.
 const (
-	StatusPass         = extractor.StatusPass
-	StatusLimitReached = extractor.StatusLimitReached
-	StatusTimeout      = extractor.StatusTimeout
-	StatusInvalid      = extractor.StatusInvalid
-	StatusError        = extractor.StatusError
+	StatusPass         = Status(extractor.StatusPass)
+	StatusLimitReached = Status(extractor.StatusLimitReached)
+	StatusTimeout      = Status(extractor.StatusTimeout)
+	StatusInvalid      = Status(extractor.StatusInvalid)
+	StatusError        = Status(extractor.StatusError)
 )
 
 // Limit errors, for callers that want to distinguish which bound was hit.
@@ -238,6 +543,100 @@ var (
 	ErrNestingHit    = extractor.ErrNestingHit
 )
 
+// Sink receives extracted file contents. DirSink and DiscardSink are the two
+// built-in implementations; a caller may implement Sink itself to extract
+// into a virtual filesystem, an object store, or anywhere else that isn't a
+// real directory. A type implementing Sink automatically works as an
+// ExtractOptions.Sink — there is nothing to import from internal/.
+type Sink interface {
+	// File is called once per entry that survives validation, in the order
+	// entries appear in the archive. mode is the entry's declared file mode.
+	File(name string, mode fs.FileMode) (io.WriteCloser, error)
+}
+
+// Rollbacker is implemented by a Sink that can undo everything it wrote,
+// which Extract calls when ExtractOptions.CleanOnFail is set and extraction
+// is aborted partway through. A Sink that cannot roll back need not
+// implement it; CleanOnFail is then a no-op.
+type Rollbacker interface {
+	Rollback() error
+}
+
+// DirSink writes each entry under dest on local disk, creating directories
+// as needed.
+func DirSink(dest string) Sink { return extractor.DirSink(dest) }
+
+// DiscardSink writes nothing anywhere: every entry is still decompressed and
+// counted against the limits, but no bytes land on any filesystem or store.
+// This is validate-only extraction — proof an archive is safe to extract,
+// without ever writing untrusted output.
+func DiscardSink() Sink { return extractor.DiscardSink() }
+
+// ExtractOptions configures a bounded extraction.
+type ExtractOptions struct {
+	Limits Limits
+
+	// Sink is where surviving entries are written. DirSink(path) recreates
+	// the extractor's original behaviour; DiscardSink() validates an archive
+	// against the limits without writing anything. Required.
+	Sink Sink
+
+	// CleanOnFail, if set, asks Sink to undo whatever it wrote when
+	// extraction is aborted partway through. It is a no-op for a Sink that
+	// does not implement Rollbacker.
+	CleanOnFail bool
+
+	// OnEntry, if set, is called once for every entry zipthorn refuses to
+	// extract, with the reason. It fires for entries rejected during
+	// pre-extraction path validation as well as entries that fail during
+	// extraction itself. It is not called for entries that extract
+	// successfully.
+	OnEntry func(name string, err error)
+}
+
+func (o ExtractOptions) toInternal() extractor.Options {
+	return extractor.Options{
+		Limits:      config.Limits(o.Limits),
+		Sink:        o.Sink,
+		CleanOnFail: o.CleanOnFail,
+		OnEntry:     o.OnEntry,
+	}
+}
+
+// ExtractResult reports what a bounded extraction did and why it stopped.
+type ExtractResult struct {
+	Status         Status        `json:"status"`
+	Elapsed        time.Duration `json:"elapsed_ns"`
+	FilesProcessed int64         `json:"files_processed"`
+	BytesProduced  int64         `json:"bytes_produced"`
+	Ratio          float64       `json:"ratio"`
+	LimitReached   string        `json:"limit_reached,omitempty"`
+	Reason         string        `json:"reason,omitempty"`
+	Error          string        `json:"error,omitempty"`
+
+	inner extractor.Result
+}
+
+// Err returns the underlying error behind a non-PASS result, still wrapping
+// whichever sentinel (ErrUnsafePath, ErrByteLimitHit, ...) caused it, so
+// callers can branch with errors.Is instead of matching on Reason strings.
+// It is nil when Status is StatusPass.
+func (r ExtractResult) Err() error { return r.inner.Err() }
+
+func toExtractResult(r extractor.Result) ExtractResult {
+	return ExtractResult{
+		Status:         Status(r.Status),
+		Elapsed:        r.Elapsed,
+		FilesProcessed: r.FilesProcessed,
+		BytesProduced:  r.BytesProduced,
+		Ratio:          r.Ratio,
+		LimitReached:   r.LimitReached,
+		Reason:         r.Reason,
+		Error:          r.Error,
+		inner:          r,
+	}
+}
+
 // Extract unpacks an archive from r under hard limits, validating the
 // central directory before writing anything and stopping the moment a limit
 // is reached. Cancel ctx (or give it a deadline) to bound the wall-clock
@@ -246,22 +645,17 @@ var (
 // Extract reports failure in the returned result's Status rather than as an
 // error: a refused archive is a verdict, not a malfunction.
 func Extract(ctx context.Context, r io.ReaderAt, size int64, opts ExtractOptions) ExtractResult {
-	return extractor.Extract(ctx, r, size, opts)
+	return toExtractResult(extractor.Extract(ctx, r, size, opts.toInternal()))
 }
 
 // ExtractFile is Extract over the archive at path.
 func ExtractFile(ctx context.Context, path string, opts ExtractOptions) ExtractResult {
-	return extractor.ExtractFile(ctx, path, opts)
+	return toExtractResult(extractor.ExtractFile(ctx, path, opts.toInternal()))
 }
 
-// Generation.
-type (
-	// Spec describes the fixture to generate.
-	Spec = generator.Spec
-
-	// GenerateResult describes the fixture that was generated.
-	GenerateResult = generator.Result
-)
+// ---------------------------------------------------------------------------
+// Generation
+// ---------------------------------------------------------------------------
 
 // Fixture profiles.
 const (
@@ -283,6 +677,69 @@ var (
 	ErrLimitExceeded  = generator.ErrLimitExceeded
 )
 
+// Spec describes the fixture to generate.
+type Spec struct {
+	Profile      string
+	Seed         int64
+	DeclaredSize int64   // total uncompressed bytes to generate
+	FileCount    int64   // entries to generate
+	FileSize     int64   // uncompressed size of one generated entry
+	Ratio        float64 // target expansion of generated payloads
+	Depth        int     // directory nesting
+	Nesting      int     // archive-within-archive levels
+	Level        int     // deflate level 1..9, or LevelDefault; 0 also means default
+	Limits       Limits
+}
+
+func (s Spec) toInternal() generator.Spec {
+	return generator.Spec{
+		Profile:      s.Profile,
+		Seed:         s.Seed,
+		DeclaredSize: s.DeclaredSize,
+		FileCount:    s.FileCount,
+		FileSize:     s.FileSize,
+		Ratio:        s.Ratio,
+		Depth:        s.Depth,
+		Nesting:      s.Nesting,
+		Level:        s.Level,
+		Limits:       config.Limits(s.Limits),
+	}
+}
+
+// GenerateResult describes the fixture that was generated.
+type GenerateResult struct {
+	Path           string  `json:"path,omitempty"`
+	Profile        string  `json:"profile"`
+	Seed           int64   `json:"seed"`
+	ArchiveSize    int64   `json:"archive_size"`
+	DeclaredSize   int64   `json:"declared_size"`
+	ExpansionRatio float64 `json:"expansion_ratio"`
+	FileCount      int64   `json:"file_count"`
+	DirCount       int64   `json:"dir_count"`
+	MaxDepth       int     `json:"max_depth"`
+	Nesting        int     `json:"nesting"`
+	Limits         Limits  `json:"limits"`
+}
+
+func toGenerateResult(r *generator.Result) *GenerateResult {
+	if r == nil {
+		return nil
+	}
+	return &GenerateResult{
+		Path:           r.Path,
+		Profile:        r.Profile,
+		Seed:           r.Seed,
+		ArchiveSize:    r.ArchiveSize,
+		DeclaredSize:   r.DeclaredSize,
+		ExpansionRatio: r.ExpansionRatio,
+		FileCount:      r.FileCount,
+		DirCount:       r.DirCount,
+		MaxDepth:       r.MaxDepth,
+		Nesting:        r.Nesting,
+		Limits:         Limits(r.Limits),
+	}
+}
+
 // Profiles lists the available fixture profiles.
 func Profiles() []string { return generator.Profiles() }
 
@@ -290,24 +747,7 @@ func Profiles() []string { return generator.Profiles() }
 // if the spec would exceed Spec.Limits, nothing is written and the error wraps
 // ErrLimitExceeded. A non-zero Spec.Seed makes the output byte-identical across
 // runs.
-func Generate(w io.Writer, s Spec) (*GenerateResult, error) { return generator.Generate(w, s) }
-
-// Benchmarking.
-type (
-	// Metrics captures one extraction's performance characteristics.
-	Metrics = benchmark.Metrics
-
-	// AggregateMetrics holds statistics across repeated runs.
-	AggregateMetrics = benchmark.AggregateMetrics
-)
-
-// Benchmark extracts an archive once under limits and reports its performance.
-func Benchmark(ctx context.Context, archivePath string, limits Limits, destDir string, cleanOnFailure bool) (*Metrics, error) {
-	return benchmark.Run(ctx, archivePath, limits, destDir, cleanOnFailure)
-}
-
-// BenchmarkRuns repeats Benchmark and returns the per-run metrics alongside
-// aggregate statistics.
-func BenchmarkRuns(ctx context.Context, archivePath string, limits Limits, destDir string, cleanOnFailure bool, runs int) ([]*Metrics, *AggregateMetrics, error) {
-	return benchmark.RunMultiple(ctx, archivePath, limits, destDir, cleanOnFailure, runs)
+func Generate(w io.Writer, s Spec) (*GenerateResult, error) {
+	r, err := generator.Generate(w, s.toInternal())
+	return toGenerateResult(r), err
 }

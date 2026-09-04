@@ -280,21 +280,3 @@ func TestLoadConfigFile(t *testing.T) {
 		t.Error("an unmentioned key should keep its default")
 	}
 }
-
-func TestBenchmarkReportsMetrics(t *testing.T) {
-	path := fixture(t, zipthorn.Spec{
-		Profile: zipthorn.ProfileFileCount, Seed: 9, FileCount: 50, FileSize: 256,
-	})
-
-	m, err := zipthorn.Benchmark(context.Background(), path,
-		zipthorn.DefaultConfig().Limits, filepath.Join(t.TempDir(), "out"), true)
-	if err != nil {
-		t.Fatalf("Benchmark: %v", err)
-	}
-	if m.FileCount != 50 {
-		t.Errorf("file count = %d, want 50", m.FileCount)
-	}
-	if m.WallTimeNanos <= 0 {
-		t.Error("wall time should be positive")
-	}
-}

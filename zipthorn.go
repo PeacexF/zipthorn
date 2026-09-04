@@ -324,6 +324,8 @@ const (
 
 var levelNames = map[Level]string{LevelLow: "LOW", LevelMedium: "MEDIUM", LevelHigh: "HIGH"}
 
+// String renders a Level as its name ("LOW", "MEDIUM", "HIGH"), or
+// "LEVEL_<n>" for a value outside the three known levels.
 func (l Level) String() string {
 	if n, ok := levelNames[l]; ok {
 		return n
@@ -335,6 +337,8 @@ func (l Level) String() string {
 // what the CLI's --json output has always produced.
 func (l Level) MarshalJSON() ([]byte, error) { return json.Marshal(l.String()) }
 
+// UnmarshalJSON parses a Level from its name, the inverse of MarshalJSON.
+// It returns an error for anything other than "LOW", "MEDIUM", or "HIGH".
 func (l *Level) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
@@ -945,8 +949,8 @@ var (
 
 // Spec describes the fixture to generate.
 type Spec struct {
-	Profile      string
-	Seed         int64
+	Profile      string  // one of the Profile* constants (ProfileRatio, ProfileFileCount, ...)
+	Seed         int64   // deterministic seed; two Specs with the same Seed produce byte-identical output
 	DeclaredSize int64   // total uncompressed bytes to generate
 	FileCount    int64   // entries to generate
 	FileSize     int64   // uncompressed size of one generated entry

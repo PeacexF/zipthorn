@@ -544,6 +544,35 @@ take an `io.ReaderAt` directly (`InspectFile`/`ExtractFile` are the
 path-based convenience wrappers), so an upload held in memory or streamed
 from `multipart.File` never needs to be spilled to a temp file first.
 
+### Extracting into memory
+
+`DirSink` and `DiscardSink` cover "write to a real destination" and
+"validate only" — `MemSink` covers a third case: hand each surviving entry's
+bytes back to the caller instead of writing them anywhere, for something
+that isn't a filesystem write in the first place (an AV scan, a hash, a
+multipart upload to object storage):
+
+```go
+sink, entries := zipthorn.MemSink()
+
+res, err := zipthorn.Guard(ctx, file, size, zipthorn.GuardOptions{
+	Limits: zipthorn.DefaultConfig().Limits, Sink: sink,
+})
+if err != nil || !res.OK() {
+	return fmt.Errorf("rejected: %v %s", err, res.Reason())
+}
+
+for _, name := range entries.Names() {
+	b, _ := entries.Bytes(name)
+	scan(name, b)
+}
+```
+
+Every byte still passes through the same `MaxOutputBytes`/expansion-ratio
+checks any other Sink is subject to — collecting into memory doesn't open a
+new way around them, so it's meant for archives whose contents comfortably
+fit in memory, not a substitute for `DirSink` on anything large.
+
 ### Configuring limits and thresholds
 
 There is no file-loading config API in the library — that is a CLI feature

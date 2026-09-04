@@ -45,11 +45,13 @@ package zipthorn
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"sort"
 	"time"
 
 	"github.com/PeacexF/zipthorn/internal/archive"
@@ -584,6 +586,93 @@ func DirSink(dest string) Sink { return extractor.DirSink(dest) }
 // This is validate-only extraction — proof an archive is safe to extract,
 // without ever writing untrusted output.
 func DiscardSink() Sink { return extractor.DiscardSink() }
+
+// MemSink collects every surviving entry into memory instead of writing it
+// anywhere, keyed by name in the returned EntryMap. It opens no new way to
+// exceed Limits.MaxOutputBytes: every byte still passes through Extract's
+// own byte and ratio checks first, exactly as it would for DirSink — MemSink
+// only changes where the bytes end up once they've cleared those checks.
+//
+// Two entries sharing a name collide the same way DirSink's files on disk
+// do: the later entry's bytes replace the earlier one's, and EntryMap ends
+// up with one entry per distinct name, not one per archive entry.
+//
+// MemSink implements Rollbacker: when ExtractOptions.CleanOnFail is set, a
+// failed extraction discards everything collected so far, the same
+// guarantee DirSink gives by deleting what it wrote.
+//
+// Use it for archives whose contents fit comfortably in memory — a config
+// bundle, a small upload processed entry-by-entry — not as a substitute for
+// DirSink on anything large; nothing here double-checks that the collected
+// total stays reasonable beyond whatever Limits already enforces.
+func MemSink() (Sink, *EntryMap) {
+	m := &EntryMap{}
+	return &memSink{m: m}, m
+}
+
+// EntryMap holds the entries a MemSink collected, populated as extraction
+// proceeds. Read it only after Extract or Guard returns — like every Sink,
+// MemSink is written to from a single goroutine during extraction, so
+// reading concurrently with an in-progress extraction is not safe.
+type EntryMap struct {
+	entries map[string][]byte
+}
+
+func (m *EntryMap) set(name string, b []byte) {
+	if m.entries == nil {
+		m.entries = make(map[string][]byte)
+	}
+	m.entries[name] = b
+}
+
+func (m *EntryMap) reset() { m.entries = nil }
+
+// Bytes returns the collected content for name and whether it was present.
+func (m *EntryMap) Bytes(name string) ([]byte, bool) {
+	b, ok := m.entries[name]
+	return b, ok
+}
+
+// Names returns every distinct name collected, sorted for deterministic
+// iteration — map order is not exposed.
+func (m *EntryMap) Names() []string {
+	out := make([]string, 0, len(m.entries))
+	for name := range m.entries {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Len returns how many distinct names were collected.
+func (m *EntryMap) Len() int { return len(m.entries) }
+
+type memSink struct{ m *EntryMap }
+
+func (s *memSink) File(name string, _ fs.FileMode) (io.WriteCloser, error) {
+	return &memEntryWriter{name: name, m: s.m}, nil
+}
+
+// Rollback discards every entry collected so far, so CleanOnFail leaves
+// MemSink's caller with nothing rather than a partial result that could be
+// mistaken for a complete one.
+func (s *memSink) Rollback() error {
+	s.m.reset()
+	return nil
+}
+
+type memEntryWriter struct {
+	name string
+	buf  bytes.Buffer
+	m    *EntryMap
+}
+
+func (w *memEntryWriter) Write(p []byte) (int, error) { return w.buf.Write(p) }
+
+func (w *memEntryWriter) Close() error {
+	w.m.set(w.name, w.buf.Bytes())
+	return nil
+}
 
 // ExtractOptions configures a bounded extraction.
 type ExtractOptions struct {

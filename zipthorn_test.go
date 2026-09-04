@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -470,5 +471,93 @@ func TestGuard_DisabledRuleIsSkipped(t *testing.T) {
 		if in.ID == zipthorn.HighCompressionRatio {
 			t.Error("HighCompressionRatio should not appear once disabled")
 		}
+	}
+}
+
+// TestMemSink_CollectsEntries proves MemSink hands back every surviving
+// entry's bytes in memory, with the same FilesProcessed/BytesProduced
+// accounting Extract already reports for any other Sink.
+func TestMemSink_CollectsEntries(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := zipthorn.Generate(&buf, zipthorn.Spec{
+		Profile: zipthorn.ProfileFileCount, Seed: 4, FileCount: 5, FileSize: 64,
+		Limits: zipthorn.DefaultConfig().Limits,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	data := buf.Bytes()
+
+	sink, entries := zipthorn.MemSink()
+	res := zipthorn.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), zipthorn.ExtractOptions{
+		Limits: zipthorn.DefaultConfig().Limits,
+		Sink:   sink,
+	})
+	if res.Status != zipthorn.StatusPass {
+		t.Fatalf("status = %s, want %s (reason: %s)", res.Status, zipthorn.StatusPass, res.Reason)
+	}
+
+	if entries.Len() != int(res.FilesProcessed) {
+		t.Errorf("EntryMap.Len() = %d, want %d (FilesProcessed)", entries.Len(), res.FilesProcessed)
+	}
+
+	names := entries.Names()
+	if len(names) != entries.Len() {
+		t.Fatalf("Names() returned %d names, Len() = %d", len(names), entries.Len())
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("Names() = %v, want sorted", names)
+	}
+
+	var total int64
+	for _, name := range names {
+		b, ok := entries.Bytes(name)
+		if !ok {
+			t.Errorf("Bytes(%q) missing despite appearing in Names()", name)
+		}
+		total += int64(len(b))
+	}
+	if total != res.BytesProduced {
+		t.Errorf("sum of collected bytes = %d, want %d (BytesProduced)", total, res.BytesProduced)
+	}
+
+	if _, ok := entries.Bytes("no-such-entry"); ok {
+		t.Error("Bytes should report false for a name that was never collected")
+	}
+}
+
+// TestMemSink_Rollback proves MemSink implements Rollbacker and that
+// Rollback actually empties the EntryMap — the mechanism ExtractOptions.
+// CleanOnFail relies on, exercised directly here since the extractor's own
+// tests already prove CleanOnFail invokes Rollback on whatever Sink
+// implements it.
+func TestMemSink_Rollback(t *testing.T) {
+	sink, entries := zipthorn.MemSink()
+
+	w, err := sink.File("a.txt", 0o644)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if entries.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1 before rollback", entries.Len())
+	}
+
+	rb, ok := sink.(zipthorn.Rollbacker)
+	if !ok {
+		t.Fatal("MemSink should implement Rollbacker")
+	}
+	if err := rb.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if entries.Len() != 0 {
+		t.Errorf("Len() = %d, want 0 after Rollback", entries.Len())
+	}
+	if _, ok := entries.Bytes("a.txt"); ok {
+		t.Error("Bytes should not find an entry discarded by Rollback")
 	}
 }
